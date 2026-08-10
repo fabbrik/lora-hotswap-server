@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LoraHotswap.Core\LoraHotswap.Core.csproj" />
+    <ProjectReference Include="..\..\src\LoraHotswap.Core.Ports\LoraHotswap.Core.Ports.csproj" />
+    <ProjectReference Include="..\..\src\LoraHotswap.Infrastructure\LoraHotswap.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\LoraHotswap.Api\LoraHotswap.Api.csproj" />
+  </ItemGroup>
+
+</Project>

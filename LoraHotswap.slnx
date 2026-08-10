@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LoraHotswap.Api/LoraHotswap.Api.csproj" />
+    <Project Path="src/LoraHotswap.Core.Ports/LoraHotswap.Core.Ports.csproj" />
+    <Project Path="src/LoraHotswap.Core/LoraHotswap.Core.csproj" />
+    <Project Path="src/LoraHotswap.Infrastructure/LoraHotswap.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LoraHotswap.Tests/LoraHotswap.Tests.csproj" />
+  </Folder>
+</Solution>
