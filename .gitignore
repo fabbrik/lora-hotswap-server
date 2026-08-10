@@ -1,4 +1,20 @@
+# Build output
 bin/
 obj/
+publish/
+artifacts/
+TestResults/
+
+# IDE / tooling
+.vs/
+.idea/
 *.user
-adapters/
+*.suo
+
+# OS
+.DS_Store
+
+# Downloaded model + adapter artifacts (Story 1.2 populates this).
+# Anchored so a source directory named "adapters" anywhere else stays tracked --
+# in a ports-and-adapters codebase that name is very likely to recur.
+/adapters/

@@ -89,3 +89,77 @@ optimised away, and true from the first commit.
   Actively maintained and the right choice *if* richer rules are ever needed.
 
 One rule does not justify a dependency. ~40 lines of XML parsing covers it.
+
+---
+
+### [HIT] `Directory.Build.props` is a decoy if the csproj templates re-declare the same properties
+
+`dotnet new classlib` and `dotnet new web` both emit `<Nullable>` and
+`<ImplicitUsings>` into the project file. Project-level properties win over
+`Directory.Build.props`, so setting them centrally does **nothing** — the file
+looks authoritative and is inert for those two settings.
+
+Only `TreatWarningsAsErrors` and `LangVersion` — the properties the template does
+not emit — actually took effect. Found by review, not by anything failing.
+
+Fix: strip `TargetFramework`, `Nullable`, and `ImplicitUsings` from every
+generated csproj and let the props file own them.
+
+### [HIT] `TreatWarningsAsErrors` turns a published CVE into a broken build
+
+NuGet audit reports NU1901–NU1904 as warnings. Promoted to errors, a CVE
+disclosed against any transitive dependency breaks the build with no commit and
+no code change.
+
+```xml
+<WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+```
+
+### [TRAP] `EnumerateFiles("Name.sln?")` also matches `.slnf`
+
+The single-character wildcard matches solution *filter* files as well as `.slnx`.
+A stray `.slnf` in an ancestor directory stops the root walk in the wrong place,
+and the failure surfaces as a confusing missing-project assertion. Both filenames
+are now checked explicitly.
+
+### [TRAP] Parsing csproj XML without namespace handling can silently find zero references
+
+`Descendants("ProjectReference")` uses a no-namespace name. A csproj carrying the
+legacy `xmlns="http://schemas.microsoft.com/developer/msbuild/2003"` root
+attribute returns **no matches**, so every "must not reference" rule passes
+while the forbidden reference sits in the file.
+
+Match on `Name.LocalName`, case-insensitively — MSBuild itself is case-insensitive
+— and split `Include` on `;`, which MSBuild accepts.
+
+### [HIT] The circular-dependency wall hides the fact that a layering test is untested
+
+Second time this bit. Adding `Infrastructure → Api` fails at MSBuild restore with
+a *circular dependency* error, because `Api → Infrastructure` already exists —
+so the sabotage never reaches the test, and an empty grep looks like "no
+findings" rather than "never ran".
+
+Every inward layering violation in a well-formed hexagon is circular, so **no
+forbidden edge can be sabotage-tested without first removing the legitimate
+reverse edge**. Verified properly:
+
+```
+LoraHotswap.Infrastructure must not reference LoraHotswap.Api.
+Current references: LoraHotswap.Api, LoraHotswap.Core, LoraHotswap.Core.Ports.
+```
+
+### [HIT] A vacuous test and a broken test are indistinguishable
+
+`PortConventionTests` scanned an assembly with no types and asserted "no
+offenders found". Green, and completely without evidence — a typo in the scanner
+would have looked identical, and would have stayed hidden until the first real
+port arrived.
+
+The scanner is now proven against deliberately non-conforming fixtures declared
+in the test assembly: a synchronous method, a method with no `CancellationToken`,
+an `internal` interface, and a member inherited from a base interface. Each must
+be detected; a conforming port must not be.
+
+The original also used `GetExportedTypes()` (misses `internal` interfaces) and
+`Type.GetMethods()` (misses base-interface members) — both invisible while the
+assembly was empty.
