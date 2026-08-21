@@ -1,0 +1,10 @@
+{
+  "repo": "https://github.com/ggml-org/llama.cpp",
+  "revision": "749f688fcaa4c472ec034b08cb8a907c45cfaa02",
+  "script": "convert_lora_to_gguf.py",
+  "paths": [
+    "convert_lora_to_gguf.py",
+    "conversion",
+    "gguf-py"
+  ]
+}

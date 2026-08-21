@@ -24,3 +24,11 @@ TestResults/
 tools/acquire/.venv/
 tools/acquire/__pycache__/
 tools/acquire/.pytest_cache/
+
+# uv scratch for the conversion tool
+tools/convert/.venv/
+tools/convert/__pycache__/
+tools/convert/.pytest_cache/
+# Vendored llama.cpp converter (obtained at the pinned converter.lock.json
+# revision by convert.py). Tooling is never committed; only the lock is.
+tools/convert/vendor/

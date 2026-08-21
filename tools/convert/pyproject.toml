@@ -1,0 +1,28 @@
+[project]
+name = "lora-hotswap-convert"
+version = "0.1.0"
+description = "Convert acquired PEFT LoRA adapters to GGUF with a provenance manifest"
+requires-python = ">=3.11"
+# Unlike acquire (which deliberately excludes torch), conversion runs llama.cpp's
+# convert_lora_to_gguf.py, which imports torch, transformers, safetensors and the
+# gguf package to read the adapter weights and the base-model config. These are
+# the converter's needs, not this tool's own logic -- convert.py itself stays a
+# thin orchestrator around that subprocess.
+dependencies = [
+    "torch>=2.2",
+    "transformers>=4.51",
+    "safetensors>=0.4",
+    "huggingface-hub>=0.30",
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "tqdm>=4.27",
+    "sentencepiece>=0.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["."]

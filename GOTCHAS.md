@@ -153,6 +153,46 @@ stderr. It is noise, not failure — all five artifacts in this story's set are
 public and downloaded fine anonymously — but a script that treats any stderr
 output as a failure signal would misreport a clean run.
 
+### [NOTE] `convert_lora_to_gguf.py` needs only the base model's *config*, not its weights — and it fetches it itself
+
+Story 1.3's headline risk was whether converting these Qwen3 adapters would drag
+in the full HF base-model safetensors repo (a Block-If artifact-set decision).
+It does not. When neither `--base` nor `--base-model-id` is passed, the converter
+reads each adapter's own `base_model_name_or_path` and loads *only* that base's
+`config.json` via `transformers.AutoConfig.from_pretrained` (cached under
+`~/.cache/huggingface`). That is the small config already reachable on the Hub
+path 1.2 permits — no large artifact, no Block-If. So the tool deliberately
+passes neither flag: letting the converter use each adapter's declared base
+string is also what preserves the `unsloth/Qwen3-0.6B` vs `Qwen/Qwen3-0.6B`
+divergence (1.6 fixture material) without normalising it.
+
+### [NOTE] Qwen3 LoRA adapters convert cleanly at the pinned llama.cpp revision
+
+All four acquired adapters (`self_cognition_Alice`, `self_cognition_Bob`,
+`Qwen3-0.6B-TLDR-Lora`, `qwen3_06B_lora_math`) convert with no error at converter
+revision `749f688f…` — the architecture (`Qwen3ForCausalLM`) is supported. This
+was the unverified external dependency the story was sequenced third to surface;
+it is now surfaced and clear.
+
+### [NOTE] The vendored converter imports `conversion` and `gguf` as siblings, so vendor more than one file
+
+"Obtain the converter" is not "download one script". `convert_lora_to_gguf.py`
+does `from conversion import ...` (the per-architecture model definitions, a
+whole package) and `import gguf` (from the bundled `gguf-py`). `convert.py`
+vendors all three paths (`convert_lora_to_gguf.py`, `conversion/`, `gguf-py/`) at
+the pinned commit and runs the script with cwd set to the vendored root so both
+imports resolve. Pinning just the one filename would break at import.
+
+### [NOTE] Converter chatter goes to stderr on success — do not treat it as failure
+
+Same trap as acquisition's Hub warning. The converter logs INFO lines and (when
+unauthenticated) the Hub rate-limit warning to stderr even on a clean run.
+`convert.py` keys off the subprocess *exit code*, and only surfaces stderr
+verbatim when that code is non-zero. GGUF output is also not guaranteed
+byte-identical across machines/library versions, which is exactly why the
+`ggufSha256` and the manifests are computed per-local-conversion and never
+committed — a committed hash would fail a fresh clone's warm-path check.
+
 ### [HIT] The circular-dependency wall hides the fact that a layering test is untested
 
 Second time this bit. Adding `Infrastructure → Api` fails at MSBuild restore with
