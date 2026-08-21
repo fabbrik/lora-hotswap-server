@@ -16,6 +16,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Committed offline regression fixtures, copied next to the test binary so
+         AdapterContentReaderTests can read them without network or the gitignored
+         /adapters/ directory. -->
+    <None Include="fixtures\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>fixtures\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\LoraHotswap.Core\LoraHotswap.Core.csproj" />
     <ProjectReference Include="..\..\src\LoraHotswap.Core.Ports\LoraHotswap.Core.Ports.csproj" />
     <ProjectReference Include="..\..\src\LoraHotswap.Infrastructure\LoraHotswap.Infrastructure.csproj" />

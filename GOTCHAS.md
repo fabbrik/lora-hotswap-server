@@ -251,3 +251,27 @@ be detected; a conforming port must not be.
 The original also used `GetExportedTypes()` (misses `internal` interfaces) and
 `Type.GetMethods()` (misses base-interface members) — both invisible while the
 assembly was empty.
+
+### [HIT] The inert trap is keyed on `lora_B` only — an "all zeros" check misses it
+
+Story 1.5 ports rung 1's finding into the server. An adapter is inert when
+`ΔW = B·A = 0`, which happens iff every `lora_B` tensor is zero — but `lora_A` is
+typically *nonzero* even on an inert adapter (that is exactly the shape
+`ybelkada/opt-350m-lora` ships). A naive "is the safetensors file all zeros"
+check would pass an inert adapter as trained. `AdapterValidator.Validate` keys on
+`lora_B` magnitudes only, mirroring `scan_adapters.py`'s `z == n` over `lora_B`.
+
+The rejection is a distinct, fatal `RejectionReason.Inert` — never a generic
+failure or a warning — so later stories can add their own reasons without
+colliding.
+
+### [HIT] The real inert adapter is a gated ~700MB download — reproduce, don't fetch
+
+`ybelkada/opt-350m-lora` is the canonical inert adapter, but pulling it from the
+Hub is a gated multi-hundred-MB download and would make the suite network-bound.
+`tests/LoraHotswap.Tests/fixtures/make_inert_fixture.py` reproduces its *defining*
+structure (r=16, alpha=32, q_proj/v_proj on facebook/opt-350m, all `lora_B` zero,
+`lora_A` seeded-nonzero) in a compact committed `.safetensors` (~513 KiB) using
+only stdlib `struct`/`json` — no numpy, torch, or network. It is deterministic:
+re-running rewrites byte-identical files. Keep the generator and its output in
+sync; regenerate with `python3 make_inert_fixture.py` from the fixtures dir.

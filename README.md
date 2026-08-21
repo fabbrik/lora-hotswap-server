@@ -102,5 +102,28 @@ non-zero. To rebuild that one, delete its `adapter.gguf` and
 dotnet build && dotnet test
 ```
 
+#### Adapter content validation (Story 1.5)
+
+`LoraHotswap.Core` now holds the first domain code: `AdapterConfig` parses an
+adapter's `adapter_config.json` (defaulting an absent `use_rslora` to false and
+resolving scaling as `alpha/r`, or `alpha/sqrt(r)` under rSLoRA), and
+`AdapterValidator` applies the **inert** rule -- an adapter is rejected fatally
+as `RejectionReason.Inert` iff it has `lora_B` tensors and every one of them is
+exactly zero (`ΔW = B·A = 0`, a silent no-op). Core stays TorchSharp-free:
+`AdapterValidator` operates over plain `double` magnitudes.
+
+`LoraHotswap.Infrastructure` owns the native read. Its `SafeTensors.cs` is ported
+verbatim from rung 1's `lora-anatomy-dotnet/src/LoraAnatomy/SafeTensors.cs` (the
+reuse mandate) behind a `TorchSharp-cpu` reference; `AdapterContentReader` reads
+an adapter directory, reduces each `lora_B` tensor to `abs().max()`, and feeds the
+Core validator.
+
+The published `ybelkada/opt-350m-lora` ships every `lora_B` exactly zero -- a real
+inert adapter -- but it is a gated ~700MB Hub download, so it is **not** committed.
+Instead `tests/LoraHotswap.Tests/fixtures/make_inert_fixture.py` (dependency-free,
+offline, deterministic) generates a compact seeded reproduction of its defining
+all-zero-`lora_B` structure (`inert-ybelkada-opt-350m/`) plus a nonzero-`lora_B`
+`trained-control/`. Those committed fixtures back the offline regression test.
+
 See `tools/acquire/acquire.py` for the acquisition tool's own docstring, and
 `GOTCHAS.md` for issues hit along the way.
