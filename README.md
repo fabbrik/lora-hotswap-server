@@ -36,10 +36,16 @@ vendored under `tools/convert/vendor/` and never committed), produces
 `adapters/<name>/adapter.gguf`, and writes a sidecar
 `adapters/<name>/adapter.manifest.json` binding the source safetensors hash, the
 produced GGUF hash, and the converter revision. Each adapter's outcome
-(converted / already-current / failed) is reported; the run exits non-zero iff
-any adapter failed. Re-running is safe: with the gguf + manifest present and
-their hashes matching, it reconverts nothing and exits 0. Neither the `.gguf`
-files nor the manifests are committed -- provenance is per-local-conversion.
+(converted / already-current / modified / failed) is reported; the run exits
+non-zero iff any adapter is modified or failed. Re-running is safe: with the gguf
++ manifest present and their hashes matching, it reconverts nothing and exits 0.
+Neither the `.gguf` files nor the manifests are committed -- provenance is
+per-local-conversion.
+
+> **Note:** a *cold* conversion is not offline. It fetches the pinned converter
+> from GitHub and each adapter's declared base-model `config.json` from the
+> Hugging Face Hub, so a first run needs network access. Once the converter is
+> vendored and the adapters are converted, subsequent (warm) runs touch neither.
 
 If an adapter's on-disk `adapter.gguf` or `adapter.manifest.json` no longer
 matches its recorded hashes, it is reported as `modified` and left untouched

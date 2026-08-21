@@ -193,6 +193,19 @@ byte-identical across machines/library versions, which is exactly why the
 `ggufSha256` and the manifests are computed per-local-conversion and never
 committed — a committed hash would fail a fresh clone's warm-path check.
 
+### [NOTE] Vendoring fetches the converter by commit SHA, which the remote must allow
+
+`convert.py` obtains the converter with `git fetch --depth 1 origin <sha>` then
+`git checkout <sha>`. Fetching a bare commit SHA works only when the server
+enables `uploadpack.allowReachableSHA1InWant` (or `allowAnySHA1InWant`). GitHub
+(the pinned `ggml-org/llama.cpp` remote) currently allows it, so this is fine
+today — but a self-hosted mirror or proxy that disables it would fail the fetch
+with an opaque git error. There is no branch/tag fallback: the lock pins a SHA
+by design (reproducibility), and `load_converter_lock` now rejects a non-40-hex
+`revision` outright. If the remote ever stops allowing SHA fetches, the fix is to
+mirror the converter, not to loosen the pin. The offline-on-rerun guarantee rests
+on the vendored `.revision` marker short-circuit, not on the fetch itself.
+
 ### [HIT] The circular-dependency wall hides the fact that a layering test is untested
 
 Second time this bit. Adding `Infrastructure → Api` fails at MSBuild restore with

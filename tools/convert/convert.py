@@ -119,7 +119,13 @@ class Converter:
         checks out only the paths the converter needs.
         """
         marker = self._vendor_dir / ".revision"
-        if marker.exists() and marker.read_text().strip() == self.revision:
+        try:
+            current = marker.read_text().strip() if marker.exists() else None
+        except OSError:
+            # An unreadable marker (e.g. it is a directory) is treated as stale
+            # rather than crashing the run; the vendor tree will be re-fetched.
+            current = None
+        if current == self.revision:
             self._ready = True
             return
 
@@ -226,6 +232,15 @@ class Converter:
             raise ConversionError(
                 f"converter reported success but produced an empty file at {outfile}"
             )
+        with outfile.open("rb") as handle:
+            magic = handle.read(4)
+        if magic != b"GGUF":
+            # Non-empty but not a GGUF container (truncated/garbage on a spurious
+            # exit 0). Reject before it is hashed and published as valid.
+            raise ConversionError(
+                f"converter produced a non-GGUF file at {outfile} "
+                f"(leading bytes {magic!r}, expected b'GGUF')"
+            )
 
 
 # --------------------------------------------------------------------------
@@ -266,6 +281,20 @@ def load_converter_lock(path: Path = CONVERTER_LOCK_PATH) -> dict:
     for key in ("repo", "revision", "script", "paths"):
         if not lock.get(key):
             raise ConversionError(f"{path}: missing {key!r}")
+    revision = lock["revision"]
+    # Enforce the "full canonical commit id, verbatim" invariant in code, not
+    # just in a test: a tag/branch would fetch and check out fine but record a
+    # non-canonical provenance string into every manifest.
+    if not (
+        isinstance(revision, str)
+        and len(revision) == 40
+        and all(c in "0123456789abcdef" for c in revision.lower())
+    ):
+        raise ConversionError(
+            f"{path}: 'revision' must be a full 40-hex commit id, got {revision!r}"
+        )
+    if not isinstance(lock["paths"], list):
+        raise ConversionError(f"{path}: 'paths' must be a list")
     return lock
 
 
@@ -331,6 +360,19 @@ def verify_current(adapter: Adapter, root: Path) -> str | None:
     if problems:
         return "; ".join(problems)
     return None
+
+
+def needs_conversion(adapter: Adapter, root: Path) -> bool:
+    """True when a cold conversion is required: the source is present and no
+    gguf/manifest exists yet. Warm ("already-current") and MODIFIED states never
+    need the converter, so a fully-warm run must not obtain it (no git/network).
+    """
+    if not adapter.source_path(root).exists():
+        return False
+    return (
+        not adapter.gguf_path(root).exists()
+        and not adapter.manifest_path(root).exists()
+    )
 
 
 def convert_one(adapter: Adapter, root: Path, converter) -> Result:
@@ -425,7 +467,10 @@ def report(results: list[Result], out=sys.stdout) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Convert acquired PEFT LoRA adapters to GGUF with a "
+        "provenance manifest."
+    )
     parser.add_argument(
         "--root",
         type=Path,
@@ -442,12 +487,17 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_FAILED
 
     converter = Converter(lock)
-    try:
-        converter.ensure_available()
-    except ConversionError as exc:
-        # The converter could not be obtained: leave existing manifests untouched.
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_FAILED
+    # Obtain the converter only when at least one adapter actually needs a cold
+    # conversion; a fully-warm run must never touch git or the network. Fail fast
+    # here so an unobtainable converter is one clean top-level error, not a
+    # per-adapter failure spray. OSError (disk/permission during vendoring) is
+    # caught too, so it reports cleanly instead of dumping a raw traceback.
+    if any(needs_conversion(a, args.root) for a in adapters):
+        try:
+            converter.ensure_available()
+        except (ConversionError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_FAILED
 
     results = convert(adapters, args.root, converter)
     report(results)

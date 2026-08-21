@@ -334,15 +334,40 @@ class UnobtainableConverter:
         raise AssertionError("run must never be reached when the converter is unobtainable")
 
 
-def test_unobtainable_converter_exits_nonzero_and_leaves_manifests_untouched(
+def test_unobtainable_converter_exits_nonzero_and_leaves_existing_artifacts(
     tmp_path, monkeypatch, capsys
 ):
-    # An adapter with an existing manifest from a prior conversion.
+    # ALICE is cold (needs conversion) so the converter IS obtained -> fails fast.
+    # BOB is already current; the fail-fast happens before the convert loop, so
+    # BOB's existing artifacts are left byte-for-byte untouched.
+    seed_source(tmp_path, BOB)
+    C.convert([BOB], tmp_path, FakeConverter())
+    bob_gguf = BOB.gguf_path(tmp_path).read_bytes()
+    bob_manifest = BOB.manifest_path(tmp_path).read_bytes()
+    seed_source(tmp_path, ALICE)  # cold: source only, no gguf/manifest
+
+    conv = UnobtainableConverter()
+    monkeypatch.setattr(C, "load_adapters", lambda *a: [ALICE, BOB])
+    monkeypatch.setattr(
+        C, "load_converter_lock", lambda: {"revision": conv.revision}
+    )
+    monkeypatch.setattr(C, "Converter", lambda lock: conv)
+
+    assert C.main(["--root", str(tmp_path)]) == C.EXIT_FAILED
+    # The revision that failed is named on stderr, and nothing was converted.
+    assert conv.REVISION in capsys.readouterr().err
+    assert not ALICE.gguf_path(tmp_path).exists()
+    assert not ALICE.manifest_path(tmp_path).exists()
+    assert BOB.gguf_path(tmp_path).read_bytes() == bob_gguf
+    assert BOB.manifest_path(tmp_path).read_bytes() == bob_manifest
+
+
+def test_fully_warm_run_never_obtains_the_converter(tmp_path, monkeypatch):
+    # Every adapter already current -> ensure_available must not be called at all
+    # (a fully-warm run must not touch git/network). UnobtainableConverter would
+    # raise if ensure_available were reached.
     seed_source(tmp_path, ALICE)
-    manifest = ALICE.manifest_path(tmp_path)
-    original = json.dumps({"sourceSha256": "old", "ggufSha256": "old",
-                           "converterRevision": "old"})
-    manifest.write_text(original)
+    C.convert([ALICE], tmp_path, FakeConverter())
 
     conv = UnobtainableConverter()
     monkeypatch.setattr(C, "load_adapters", lambda *a: [ALICE])
@@ -351,10 +376,7 @@ def test_unobtainable_converter_exits_nonzero_and_leaves_manifests_untouched(
     )
     monkeypatch.setattr(C, "Converter", lambda lock: conv)
 
-    assert C.main(["--root", str(tmp_path)]) == C.EXIT_FAILED
-    # The revision that failed is named, and the existing manifest is untouched.
-    assert conv.REVISION in capsys.readouterr().err
-    assert manifest.read_text() == original
+    assert C.main(["--root", str(tmp_path)]) == C.EXIT_OK
 
 
 # ---------------------------------------------------------------- sources / lock
@@ -423,3 +445,77 @@ def test_zero_byte_converter_output_fails_with_no_manifest(tmp_path, monkeypatch
     assert "empty file" in results[0].detail
     assert not ALICE.gguf_path(tmp_path).exists()
     assert not ALICE.manifest_path(tmp_path).exists()
+
+
+def _ready_converter(tmp_path):
+    lock = {
+        "repo": "x",
+        "revision": "a" * 40,
+        "script": "convert_lora_to_gguf.py",
+        "paths": ["convert_lora_to_gguf.py"],
+    }
+    converter = C.Converter(lock, vendor_dir=tmp_path / "vendor")
+    converter._ready = True  # skip real vendoring
+    return converter
+
+
+def _proc(returncode, stderr="", stdout=""):
+    class P:
+        pass
+
+    P.returncode = returncode
+    P.stderr = stderr
+    P.stdout = stdout
+    return P()
+
+
+def test_real_converter_run_surfaces_verbatim_stderr_on_nonzero_exit(
+    tmp_path, monkeypatch
+):
+    # Exercises the REAL Converter.run non-zero branch (not FakeConverter): the
+    # converter's own stderr must reach the operator verbatim.
+    converter = _ready_converter(tmp_path)
+    monkeypatch.setattr(
+        C.subprocess,
+        "run",
+        lambda cmd, **kw: _proc(1, stderr="Model FooBarForCausalLM is not supported"),
+    )
+    with pytest.raises(C.ConversionError) as exc:
+        converter.run(tmp_path, tmp_path / "out.gguf")
+    assert str(exc.value) == "Model FooBarForCausalLM is not supported"
+
+
+def test_real_converter_run_reports_missing_output_file(tmp_path, monkeypatch):
+    # Exit 0 but no file produced -> named ConversionError (untested branch).
+    converter = _ready_converter(tmp_path)
+    monkeypatch.setattr(C.subprocess, "run", lambda cmd, **kw: _proc(0))
+    with pytest.raises(C.ConversionError) as exc:
+        converter.run(tmp_path, tmp_path / "out.gguf")
+    assert "produced no file" in str(exc.value)
+
+
+def test_real_converter_run_rejects_non_gguf_output(tmp_path, monkeypatch):
+    # Exit 0 with a non-empty but non-GGUF file must be rejected before hashing.
+    converter = _ready_converter(tmp_path)
+
+    def fake_run(cmd, **kw):
+        Path(cmd[cmd.index("--outfile") + 1]).write_bytes(b"not-a-gguf-file")
+        return _proc(0)
+
+    monkeypatch.setattr(C.subprocess, "run", fake_run)
+    with pytest.raises(C.ConversionError) as exc:
+        converter.run(tmp_path, tmp_path / "out.gguf")
+    assert "non-GGUF" in str(exc.value)
+
+
+def test_load_converter_lock_rejects_non_canonical_revision(tmp_path):
+    # A tag/branch (not a 40-hex commit) must be refused: the manifest's
+    # "canonical commit id verbatim" invariant is enforced in code, not test-only.
+    path = tmp_path / "converter.lock.json"
+    path.write_text(json.dumps({
+        "repo": "x", "revision": "main",
+        "script": "convert_lora_to_gguf.py", "paths": ["convert_lora_to_gguf.py"],
+    }))
+    with pytest.raises(C.ConversionError) as exc:
+        C.load_converter_lock(path)
+    assert "40-hex" in str(exc.value)
