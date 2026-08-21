@@ -275,3 +275,49 @@ structure (r=16, alpha=32, q_proj/v_proj on facebook/opt-350m, all `lora_B` zero
 only stdlib `struct`/`json` — no numpy, torch, or network. It is deterministic:
 re-running rewrites byte-identical files. Keep the generator and its output in
 sync; regenerate with `python3 make_inert_fixture.py` from the fixtures dir.
+
+### [TRAP] The artifacts DTO cannot live in `Core` — `Core.Ports` references *nothing*
+
+Story 1.6's driven port `IAdapterArtifactsReader` returns an artifacts DTO. The
+natural instinct (and the story's Code Map note) is to put that DTO in `Core`. But
+the dependency direction is `Core -> Core.Ports`: `Core.Ports` is the *innermost*
+layer and `DependencyDirectionTests` asserts it references nothing. A port
+returning a `Core` type would force `Core.Ports -> Core` and break that test.
+
+Resolution: the DTO (`AdapterArtifacts`, `AdapterManifest`, `AdapterConfigSnapshot`)
+lives in `Core.Ports`, carrying the config as a plain-value **snapshot** rather than
+the `Core` `AdapterConfig` type. Admission (in `Core`) consumes it fine
+(`Core -> Core.Ports`), and the host rebuilds a full `AdapterConfig` from the
+snapshot for the registry. The reuse mandate still holds: the infrastructure reader
+parses via Story 1.5's `AdapterConfig`, then projects it into the snapshot.
+
+### [TRAP] Registering a singleton *after* `builder.Build()` is impossible
+
+Admission must run **between** `builder.Build()` and `app.Run()` (the
+fail-before-listen guarantee), yet its product — the `AdapterRegistry` — must be a
+DI singleton. The service collection is frozen at `Build()`, so you cannot add the
+registry once admission has produced it.
+
+Resolution: register a singleton *factory* over a captured `AdapterRegistry?`
+closure variable **before** `Build()`. Admission (after `Build()`) assigns the
+variable; the factory throws if resolved before that. Later stories resolve it only
+while serving — strictly after admission has set it, or after the process has
+already exited non-zero. Nothing binds a listener in between.
+
+### [HIT] Strict base matching is a *feature*, not a bug to normalize away
+
+The acquired `qwen3_06B_lora_math` declares `unsloth/Qwen3-0.6B` for weights
+compatible with `Qwen/Qwen3-0.6B`. Admission compares `base_model_name_or_path` to
+the configured base by **ordinal string equality** and rejects the mismatch. A
+normalization table (case-folding, vendor-prefix stripping) would paper over a
+genuinely different provenance claim, so the rejection is asserted as
+correct-by-design in `AdmissionTests`. Don't "fix" it.
+
+### [TRAP] Admission fixtures need a real `.gguf` — but its *content* is irrelevant
+
+Admission hashes the raw bytes of `adapter.gguf`, so the admission fixtures ship a
+tiny non-GGUF stand-in blob (`b"GGUF" + <deterministic bytes>`). Only determinism
+matters for the hash comparison, not GGUF validity — no llama.cpp, no multi-MB
+container. `make_admission_fixtures.py` (stdlib `struct`/`json`/`hashlib` only)
+regenerates all six directories byte-identically under
+`tests/LoraHotswap.Tests/fixtures/admission/`, each well under 1 MB.

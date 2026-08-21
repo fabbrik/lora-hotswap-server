@@ -12,7 +12,12 @@ namespace LoraHotswap.Core;
 /// <param name="R">The LoRA rank (<c>r</c>).</param>
 /// <param name="Alpha">The LoRA alpha (<c>lora_alpha</c>).</param>
 /// <param name="UseRsLora">Whether rSLoRA scaling applies (<c>use_rslora</c>, default false).</param>
-public sealed record AdapterConfig(int R, int Alpha, bool UseRsLora)
+/// <param name="BaseModelName">
+/// The declared base model (<c>base_model_name_or_path</c>). Compared to the
+/// configured base model by <b>strict ordinal string equality</b> at admission --
+/// no normalization, case-folding, or vendor-prefix stripping.
+/// </param>
+public sealed record AdapterConfig(int R, int Alpha, bool UseRsLora, string BaseModelName)
 {
     /// <summary>
     /// The merge scaling factor applied as <c>ΔW = Scaling · B · A</c>.
@@ -38,6 +43,14 @@ public sealed record AdapterConfig(int R, int Alpha, bool UseRsLora)
         // must default to false rather than being read blindly.
         bool useRsLora = root.TryGetProperty("use_rslora", out var rs) && rs.GetBoolean();
 
-        return new AdapterConfig(r, alpha, useRsLora);
+        // The declared base model. Kept verbatim -- strict base matching at
+        // admission depends on this string being untouched. An absent key
+        // yields the empty string, which cannot match any configured base.
+        string baseModelName =
+            root.TryGetProperty("base_model_name_or_path", out var bm) && bm.ValueKind == JsonValueKind.String
+                ? bm.GetString() ?? string.Empty
+                : string.Empty;
+
+        return new AdapterConfig(r, alpha, useRsLora, baseModelName);
     }
 }

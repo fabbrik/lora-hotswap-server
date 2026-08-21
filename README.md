@@ -125,5 +125,58 @@ offline, deterministic) generates a compact seeded reproduction of its defining
 all-zero-`lora_B` structure (`inert-ybelkada-opt-350m/`) plus a nonzero-`lora_B`
 `trained-control/`. Those committed fixtures back the offline regression test.
 
+#### Adapter admission (Story 1.6)
+
+Startup now *admits* adapters before the host will serve. Admission runs after
+the web host is built and **before any listener binds**: on any failure the
+process writes RFC 9457 reasons to stderr and exits non-zero, so a
+misconfigured deployment never opens a socket. On success the immutable
+`AdapterRegistry` is registered as a singleton for later stories.
+
+Each adapter is judged by the pure `Admission.Admit` decision (in
+`LoraHotswap.Core`) over artifacts read through the `IAdapterArtifactsReader`
+port. The checks apply in a deliberate, **first-problem-wins** order:
+
+1. **Missing manifest** — an adapter with no `adapter.manifest.json` is rejected.
+   Provenance is *never* inferred from filenames, timestamps, directory names, or
+   GGUF metadata — only from the manifest's recorded hashes.
+2. **Provenance hashes** — the SHA-256 of `adapter_model.safetensors` and of
+   `adapter.gguf` are recomputed from raw file bytes (a streaming hash, the .NET
+   analogue of `convert.py`'s `sha256_of`) and compared to the manifest's
+   `sourceSha256` / `ggufSha256`. A mismatch is rejected and the reason **names
+   which hash diverged** (source is checked before gguf). The admitted
+   `AdapterId` is derived from the *recomputed* source hash
+   (`sha256:` + that hash), never trusted from the manifest's self-declared
+   `adapterId` field — identity is authoritative and content-derived.
+3. **Base model** — the adapter's `base_model_name_or_path` is compared to the
+   configured base model by **strict ordinal string equality**. No normalization,
+   case-folding, or vendor-prefix stripping. The real `qwen3_06B_lora_math`
+   declares `unsloth/Qwen3-0.6B` for weights compatible with `Qwen/Qwen3-0.6B`;
+   its rejection is asserted as **correct-by-design**, not a bug to normalize away.
+4. **Inert** — Story 1.5's rule, composed (not re-implemented): an adapter whose
+   `lora_B` tensors are all zero is rejected as its own distinct problem.
+
+Every failure mode carries a **distinct RFC 9457 `type` URI** under
+`https://lora-hotswap/problems/` (`missing-manifest`, `hash-mismatch`,
+`base-model-mismatch`, `inert-adapter`, `unknown-adapter`), so later HTTP
+surfacing (Story 2.1) and log correlation stay unambiguous.
+
+Every configured **tenant** must resolve to an admitted `AdapterId`; a tenant
+referencing an unadmitted adapter fails startup with an `unknown-adapter`
+problem. The base-model name, adapters root, adapter list, and the
+tenant → `AdapterId` map are declared under the `Admission` section of
+`appsettings.json`, bound to `AdmissionOptions`, and validated at startup.
+
+The `AdapterRegistry` is **immutable**: constructed once from admitted entries,
+it exposes lookup only and has no public add/remove/replace/evict member. Adding
+an adapter requires a restart (a reflection test proves the type is mutator-free).
+
+Admission is covered offline by committed fixtures under
+`tests/LoraHotswap.Tests/fixtures/admission/` (`valid/`, `tampered-source/`,
+`tampered-gguf/`, `no-manifest/`, `base-mismatch/`, `inert/`), regenerated
+deterministically and dependency-free by `make_admission_fixtures.py` — each
+directory carries a tiny `.gguf` stand-in and a manifest whose hashes are computed
+to match (or deliberately not).
+
 See `tools/acquire/acquire.py` for the acquisition tool's own docstring, and
 `GOTCHAS.md` for issues hit along the way.

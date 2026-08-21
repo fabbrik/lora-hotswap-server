@@ -39,7 +39,7 @@ public class AdapterConfigTests
     [Fact]
     public void Scaling_is_alpha_over_r_when_rslora_false()
     {
-        var config = new AdapterConfig(R: 16, Alpha: 32, UseRsLora: false);
+        var config = new AdapterConfig(R: 16, Alpha: 32, UseRsLora: false, BaseModelName: "Qwen/Qwen3-0.6B");
 
         Assert.Equal(32.0 / 16, config.Scaling);
     }
@@ -47,7 +47,7 @@ public class AdapterConfigTests
     [Fact]
     public void Scaling_is_alpha_over_sqrt_r_when_rslora_true()
     {
-        var config = new AdapterConfig(R: 16, Alpha: 32, UseRsLora: true);
+        var config = new AdapterConfig(R: 16, Alpha: 32, UseRsLora: true, BaseModelName: "Qwen/Qwen3-0.6B");
 
         Assert.Equal(32 / Math.Sqrt(16), config.Scaling);
     }
@@ -58,5 +58,23 @@ public class AdapterConfigTests
         var config = AdapterConfig.Parse("""{ "r": 8, "lora_alpha": 16 }""");
 
         Assert.Equal(16.0 / 8, config.Scaling);
+    }
+
+    [Fact]
+    public void Parses_base_model_name_verbatim()
+    {
+        var config = AdapterConfig.Parse(
+            """{ "r": 8, "lora_alpha": 16, "base_model_name_or_path": "unsloth/Qwen3-0.6B" }""");
+
+        // Kept exactly -- no normalization, so strict base matching can rely on it.
+        Assert.Equal("unsloth/Qwen3-0.6B", config.BaseModelName);
+    }
+
+    [Fact]
+    public void Base_model_name_defaults_to_empty_when_absent()
+    {
+        var config = AdapterConfig.Parse("""{ "r": 8, "lora_alpha": 16 }""");
+
+        Assert.Equal(string.Empty, config.BaseModelName);
     }
 }
