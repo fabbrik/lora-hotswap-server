@@ -18,3 +18,9 @@ TestResults/
 # Anchored so a source directory named "adapters" anywhere else stays tracked --
 # in a ports-and-adapters codebase that name is very likely to recur.
 /adapters/
+/models/
+
+# uv scratch for the acquisition tool
+tools/acquire/.venv/
+tools/acquire/__pycache__/
+tools/acquire/.pytest_cache/

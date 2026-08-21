@@ -132,6 +132,27 @@ while the forbidden reference sits in the file.
 Match on `Name.LocalName`, case-insensitively — MSBuild itself is case-insensitive
 — and split `Include` on `;`, which MSBuild accepts.
 
+---
+
+### [NOTE] `ggml-org/Qwen3-0.6B-GGUF` ships four quantisations — none pinned by spec
+
+The repo publishes `BF16`, `f16` (~1.5 GB each), `Q8_0` (~805 MB, near-lossless)
+and `Q4_0` (~429 MB). Story 1.2's spec explicitly calls this an **Ask First**
+if ambiguous. Resolved as **Q8_0**: CPU-only Apple Silicon serving doesn't
+benefit from BF16/f16's extra precision, and Q8_0 stays close enough to
+full precision that it shouldn't confound the merge-verification stories
+(1.6/1.7) the way a 4-bit quant might. `sources.toml` fetches only that one
+file — never a `snapshot_download` of the whole repo. Revisit if a later
+story's tolerance checks disagree with this choice.
+
+### [NOTE] Unauthenticated Hub requests print a rate-limit warning, not an error
+
+Every `hf_hub_download`/`model_info` call without `HF_TOKEN` set prints
+`Warning: You are sending unauthenticated requests to the HF Hub...` to
+stderr. It is noise, not failure — all five artifacts in this story's set are
+public and downloaded fine anonymously — but a script that treats any stderr
+output as a failure signal would misreport a clean run.
+
 ### [HIT] The circular-dependency wall hides the fact that a layering test is untested
 
 Second time this bit. Adding `Infrastructure → Api` fails at MSBuild restore with

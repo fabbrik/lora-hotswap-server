@@ -1,0 +1,19 @@
+[project]
+name = "lora-hotswap-acquire"
+version = "0.1.0"
+description = "Reproducible acquisition of the pinned base model and LoRA adapters"
+requires-python = ">=3.11"
+# Deliberately minimal: acquisition moves bytes and records provenance. It must
+# not drag in torch/transformers/peft -- those belong to the rung-1 reference
+# environment (lora-anatomy-dotnet/reference), not here.
+dependencies = [
+    "huggingface-hub>=1.27.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["."]

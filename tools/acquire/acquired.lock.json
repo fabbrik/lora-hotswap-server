@@ -1,0 +1,81 @@
+{
+  "artifacts": {
+    "Qwen3-0.6B-TLDR-Lora": {
+      "files": {
+        "adapter_config.json": {
+          "sha256": "c6fbcc477ee5e7e37ffa10129d7bebfc0e7f16b37152f61915b9e3ed8af3ee61",
+          "size": 769
+        },
+        "adapter_model.safetensors": {
+          "sha256": "05246882d23ac9824d92c773ebe7776a2e466c9f28d2cddf9c201f440004123a",
+          "size": 4602248
+        }
+      },
+      "kind": "adapter",
+      "repo_id": "phh/Qwen3-0.6B-TLDR-Lora",
+      "revision": "0f39534202828516c2645f1aeb8c5e9e9a0f6801",
+      "target": "adapters/Qwen3-0.6B-TLDR-Lora"
+    },
+    "base-qwen3-0.6b-gguf": {
+      "files": {
+        "Qwen3-0.6B-Q8_0.gguf": {
+          "sha256": "361cc68159042c36ebff7715dc5a2e4612153e88f3e9c9c234820849d6dc9e1d",
+          "size": 804753632
+        }
+      },
+      "kind": "base-model",
+      "repo_id": "ggml-org/Qwen3-0.6B-GGUF",
+      "revision": "b5f37287796e5be0ea3dab2e7430873fb3f73e49",
+      "target": "models/Qwen3-0.6B-GGUF"
+    },
+    "qwen3_06B_lora_math": {
+      "files": {
+        "adapter_config.json": {
+          "sha256": "8e39cf4d02027767568644021c8ac151fa2c71dcad301106ea23941451fc6ffc",
+          "size": 1183
+        },
+        "adapter_model.safetensors": {
+          "sha256": "6786f417113a98b619e7f7ca761277445c27d51804be5f24b428b841a642b1c4",
+          "size": 40422168
+        }
+      },
+      "kind": "adapter",
+      "repo_id": "lucylq/qwen3_06B_lora_math",
+      "revision": "0e6bc3a88a597c5abc4872734eec8db3a9fdd846",
+      "target": "adapters/qwen3_06B_lora_math"
+    },
+    "self_cognition_Alice": {
+      "files": {
+        "adapter_config.json": {
+          "sha256": "146330d0bb9616b8e3401efdb64a4f0f7ec6750f04f2b951064c1363644e10ec",
+          "size": 717
+        },
+        "adapter_model.safetensors": {
+          "sha256": "883e7904a6c1a71d4ab6694d543d2975a800b0630d3bfe2653cdb3b294fb6378",
+          "size": 20236472
+        }
+      },
+      "kind": "adapter",
+      "repo_id": "charent/self_cognition_Alice",
+      "revision": "e260d821b644cbb6ac323189a3ca8b3f9d8bc8a1",
+      "target": "adapters/self_cognition_Alice"
+    },
+    "self_cognition_Bob": {
+      "files": {
+        "adapter_config.json": {
+          "sha256": "4538e3b99c29b64bfd95c64cb743224afd111d9ce95a48c99b7d63fa54db78b9",
+          "size": 717
+        },
+        "adapter_model.safetensors": {
+          "sha256": "77807ca48e3c87f189599114214f61f8ffc17967a80e148e569a64d9560a06a3",
+          "size": 20236472
+        }
+      },
+      "kind": "adapter",
+      "repo_id": "charent/self_cognition_Bob",
+      "revision": "b752160d857465255e226a1b8a673a81ec832256",
+      "target": "adapters/self_cognition_Bob"
+    }
+  },
+  "version": 1
+}
