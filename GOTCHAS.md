@@ -7,7 +7,7 @@ and dodged but would have bitten someone.
 
 ### [HIT] `dotnet new xunit3` does not exist — the template ships xunit **2.9.3**
 
-Story 1.1 specified xunit.v3 3.2.2 and assumed a matching template. SDK 10.0.302
+The test project was specified to use xunit.v3 3.2.2, assuming a matching template. SDK 10.0.302
 offers only `xunit`, and it generates:
 
 ```xml
@@ -76,8 +76,8 @@ typeof(X).Assembly.GetReferencedAssemblies()
 ```
 
 The compiler elides assembly references that no code uses. With empty projects —
-exactly the state at Story 1.1 — `Core` emits no reference to anything, so the
-assertion passes while proving nothing.
+the state early on, before any real code existed — `Core` emits no reference to
+anything, so the assertion passes while proving nothing.
 
 The test reads the `.csproj` `<ProjectReference>` graph instead. Cannot be
 optimised away, and true from the first commit.
@@ -137,42 +137,43 @@ Match on `Name.LocalName`, case-insensitively — MSBuild itself is case-insensi
 ### [NOTE] `ggml-org/Qwen3-0.6B-GGUF` ships four quantisations — none pinned by spec
 
 The repo publishes `BF16`, `f16` (~1.5 GB each), `Q8_0` (~805 MB, near-lossless)
-and `Q4_0` (~429 MB). Story 1.2's spec explicitly calls this an **Ask First**
-if ambiguous. Resolved as **Q8_0**: CPU-only Apple Silicon serving doesn't
-benefit from BF16/f16's extra precision, and Q8_0 stays close enough to
-full precision that it shouldn't confound the merge-verification stories
-(1.6/1.7) the way a 4-bit quant might. `sources.toml` fetches only that one
-file — never a `snapshot_download` of the whole repo. Revisit if a later
-story's tolerance checks disagree with this choice.
+and `Q4_0` (~429 MB), with no single one obviously "the" pinned quant. Resolved
+as **Q8_0**: CPU-only Apple Silicon serving doesn't benefit from BF16/f16's
+extra precision, and Q8_0 stays close enough to full precision that it
+shouldn't confound later merge-verification tolerance checks the way a 4-bit
+quant might. `sources.toml` fetches only that one file — never a
+`snapshot_download` of the whole repo. Revisit if those tolerance checks ever
+disagree with this choice.
 
 ### [NOTE] Unauthenticated Hub requests print a rate-limit warning, not an error
 
 Every `hf_hub_download`/`model_info` call without `HF_TOKEN` set prints
 `Warning: You are sending unauthenticated requests to the HF Hub...` to
-stderr. It is noise, not failure — all five artifacts in this story's set are
-public and downloaded fine anonymously — but a script that treats any stderr
-output as a failure signal would misreport a clean run.
+stderr. It is noise, not failure — all five artifacts acquired here (the base
+model plus four adapters) are public and downloaded fine anonymously — but a
+script that treats any stderr output as a failure signal would misreport a
+clean run.
 
 ### [NOTE] `convert_lora_to_gguf.py` needs only the base model's *config*, not its weights — and it fetches it itself
 
-Story 1.3's headline risk was whether converting these Qwen3 adapters would drag
-in the full HF base-model safetensors repo (a Block-If artifact-set decision).
+The open question was whether converting these Qwen3 adapters would drag in the
+full HF base-model safetensors repo — a much larger download than intended.
 It does not. When neither `--base` nor `--base-model-id` is passed, the converter
 reads each adapter's own `base_model_name_or_path` and loads *only* that base's
 `config.json` via `transformers.AutoConfig.from_pretrained` (cached under
-`~/.cache/huggingface`). That is the small config already reachable on the Hub
-path 1.2 permits — no large artifact, no Block-If. So the tool deliberately
-passes neither flag: letting the converter use each adapter's declared base
-string is also what preserves the `unsloth/Qwen3-0.6B` vs `Qwen/Qwen3-0.6B`
-divergence (1.6 fixture material) without normalising it.
+`~/.cache/huggingface`). That's a small config file, not the model weights — no
+large artifact fetched. So the tool deliberately passes neither flag: letting
+the converter use each adapter's declared base string also preserves the
+`unsloth/Qwen3-0.6B` vs `Qwen/Qwen3-0.6B` divergence between adapters without
+normalising it away.
 
 ### [NOTE] Qwen3 LoRA adapters convert cleanly at the pinned llama.cpp revision
 
 All four acquired adapters (`self_cognition_Alice`, `self_cognition_Bob`,
 `Qwen3-0.6B-TLDR-Lora`, `qwen3_06B_lora_math`) convert with no error at converter
 revision `749f688f…` — the architecture (`Qwen3ForCausalLM`) is supported. This
-was the unverified external dependency the story was sequenced third to surface;
-it is now surfaced and clear.
+was the main unverified external dependency in the conversion step; it is now
+confirmed to work.
 
 ### [NOTE] The vendored converter imports `conversion` and `gguf` as siblings, so vendor more than one file
 

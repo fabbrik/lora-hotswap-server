@@ -14,7 +14,7 @@ TestResults/
 # OS
 .DS_Store
 
-# Downloaded model + adapter artifacts (Story 1.2 populates this).
+# Downloaded model + adapter artifacts (tools/acquire/acquire.py populates this).
 # Anchored so a source directory named "adapters" anywhere else stays tracked --
 # in a ports-and-adapters codebase that name is very likely to recur.
 /adapters/

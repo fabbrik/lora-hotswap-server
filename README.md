@@ -1,8 +1,46 @@
 # lora-hotswap-server
 
 A .NET host that loads, validates, and hot-swaps LoRA adapters over a shared
-base model. See `docs/` in the parent workspace for the epic and story specs
-driving this build.
+base model.
+
+## How this works
+
+**Base model.** A large pretrained language model — here, `Qwen3-0.6B` — made
+up of millions of learned numbers (weights). Loading it into memory is slow
+and takes gigabytes of space.
+
+**Adapter.** Instead of fine-tuning a whole new copy of the base model to
+change its behavior (rewriting all those weights), you can freeze the base
+model completely and train a small *extra* set of weights that sits alongside
+it and nudges its output. That small extra set is an adapter — typically
+megabytes instead of gigabytes, and swappable independently of the base
+model it rides on.
+
+**LoRA (Low-Rank Adaptation).** The specific technique used to build these
+adapters. Normally, fully fine-tuning a weight matrix `W` means learning a
+full-size update matrix of the same shape — expensive to store and train.
+LoRA instead approximates that update as the product of two much smaller
+("low-rank") matrices, `A` and `B`, so at inference time the model computes
+roughly `output = W·x + (A·B)·x`: the frozen base plus a small learned
+correction. Only `A` and `B` need to be trained and stored, which is why
+LoRA adapters are so much cheaper than full fine-tunes.
+
+**Hot-swap.** Because the base model and its adapters are separate files, the
+server can keep the (large, slow-to-load) base model resident in memory and
+swap in a different (small, fast-to-load) adapter on demand — changing the
+model's effective behavior without restarting the process or reloading the
+base weights.
+
+**GGUF.** The binary file format this server's runtime (based on
+`llama.cpp`) actually reads at inference time. Adapters are normally
+distributed in Hugging Face's `.safetensors` format instead, so before one
+can be used here it must be converted to `.gguf` — see step 2 below.
+
+**Quantization (e.g. "Q8_0").** Model weights are usually stored as 16- or
+32-bit floating point numbers. Quantization rounds them to lower precision
+(here, roughly 8 bits) to shrink file size and speed up inference, at a
+small cost in accuracy. "Q8_0" is `llama.cpp`'s name for one specific 8-bit
+quantization recipe.
 
 ## Getting started
 
