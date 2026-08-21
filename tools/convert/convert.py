@@ -10,14 +10,15 @@ safetensors hash, the produced GGUF hash, and the converter revision.
 
 This is the *only* link between an adapter's verification form (safetensors,
 what Story 1.6 checks) and its serving form (GGUF, what LLamaSharp loads). The
-manifest records exactly three fields -- `sourceSha256`, `ggufSha256`, and the
-converter revision. `adapterId` is deliberately absent; Story 1.4 owns
-content-derived identity and adds it in a second pass.
+manifest records four fields -- `sourceSha256`, `ggufSha256`, the converter
+revision, and `adapterId`, the content-derived identity (`sha256:` + the SHA-256
+of the source safetensors) that logs, errors, and responses name an adapter by.
 
 Idempotency is verification, not existence: a warm re-run hashes the on-disk
 source and gguf against the manifest and reconverts nothing when they match. A
-file whose hash disagrees with its manifest is reported (named) as modified,
-never silently reconverted or overwritten.
+file whose hash disagrees with its manifest -- or a manifest missing or
+disagreeing on `adapterId` -- is reported (named) as modified, never silently
+reconverted, migrated, or overwritten.
 """
 
 from __future__ import annotations
@@ -256,6 +257,12 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+def adapter_id_of(path: Path) -> str:
+    """Content-derived adapter identity: `sha256:` + the SHA-256 hex of the
+    source safetensors bytes. Stable across renames and moves, never a path."""
+    return "sha256:" + sha256_of(path)
+
+
 def sources_path_for(root: Path) -> Path:
     return root / "tools" / "acquire" / "sources.toml"
 
@@ -298,12 +305,16 @@ def load_converter_lock(path: Path = CONVERTER_LOCK_PATH) -> dict:
     return lock
 
 
-def build_manifest(source_sha: str, gguf_sha: str, revision: str) -> dict:
-    # Exactly three fields. `adapterId` is Story 1.4's, deliberately absent.
+def build_manifest(
+    source_sha: str, gguf_sha: str, revision: str, adapter_id: str
+) -> dict:
+    # Four fields. `adapterId` (Story 1.4) is the content-derived identity token;
+    # `sourceSha256` remains the bare provenance hash. sort_keys renders order.
     return {
         "sourceSha256": source_sha,
         "ggufSha256": gguf_sha,
         "converterRevision": revision,
+        "adapterId": adapter_id,
     }
 
 
@@ -346,7 +357,8 @@ def verify_current(adapter: Adapter, root: Path) -> str | None:
     source = adapter.source_path(root)
     problems: list[str] = []
     actual_source = sha256_of(source)
-    if actual_source != manifest.get("sourceSha256"):
+    source_matches = actual_source == manifest.get("sourceSha256")
+    if not source_matches:
         problems.append(
             f"{SOURCE_FILE} sha256 {actual_source} does not match manifest "
             f"{manifest.get('sourceSha256')}"
@@ -357,6 +369,24 @@ def verify_current(adapter: Adapter, root: Path) -> str | None:
             f"{GGUF_FILE} sha256 {actual_gguf} does not match manifest "
             f"{manifest.get('ggufSha256')}"
         )
+    # `adapterId` is the content-derived identity added in Story 1.4. Checked only
+    # once the source hash matches (spec: "after source+gguf match") -- a source
+    # mismatch is already reported, and adapterId is derived from the source, so
+    # reporting it too would be redundant. A manifest lacking adapterId (pre-1.4)
+    # or disagreeing with it is a disagreement, reported (named), never migrated.
+    if source_matches:
+        actual_id = "sha256:" + actual_source  # reuse the hash already computed
+        manifest_id = manifest.get("adapterId")
+        if manifest_id is None:
+            problems.append(
+                f"manifest is missing adapterId (expected {actual_id}); "
+                f"reconvert to add it"
+            )
+        elif manifest_id != actual_id:
+            problems.append(
+                f"manifest adapterId {manifest_id} does not match id "
+                f"{actual_id} recomputed from {SOURCE_FILE}"
+            )
     if problems:
         return "; ".join(problems)
     return None
@@ -405,7 +435,12 @@ def convert_one(adapter: Adapter, root: Path, converter) -> Result:
 
         source_sha = sha256_of(source)
         gguf_sha = sha256_of(tmp_gguf)
-        manifest = build_manifest(source_sha, gguf_sha, converter.revision)
+        # Derive the id from the hash already in hand (byte-consistent with
+        # sourceSha256); no second read of the source. Format matches adapter_id_of.
+        adapter_id = "sha256:" + source_sha
+        manifest = build_manifest(
+            source_sha, gguf_sha, converter.revision, adapter_id
+        )
 
         tmp_manifest = Path(tmp) / MANIFEST_FILE
         tmp_manifest.write_text(render_manifest(manifest))

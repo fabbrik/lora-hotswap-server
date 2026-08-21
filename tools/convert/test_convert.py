@@ -103,11 +103,18 @@ def test_cold_conversion_writes_gguf_and_manifest(tmp_path):
     assert gguf.exists() and manifest_path.exists()
 
     manifest = json.loads(manifest_path.read_text())
-    # Exactly the three fields -- adapterId is Story 1.4's, absent here.
-    assert set(manifest) == {"sourceSha256", "ggufSha256", "converterRevision"}
+    # Four fields: adapterId (Story 1.4) alongside the three 1.3 fields.
+    assert set(manifest) == {
+        "sourceSha256",
+        "ggufSha256",
+        "converterRevision",
+        "adapterId",
+    }
     assert manifest["sourceSha256"] == sha(b"alice-weights")
     assert manifest["ggufSha256"] == sha(gguf.read_bytes())
     assert manifest["converterRevision"] == FakeConverter.REVISION
+    # adapterId is the content-derived identity token: sha256: + source hash.
+    assert manifest["adapterId"] == "sha256:" + sha(b"alice-weights")
 
 
 # ---------------------------------------------------------------- warm
@@ -207,6 +214,58 @@ def test_gguf_present_but_manifest_missing_is_modified(tmp_path):
 
     assert statuses(results) == {"alice": C.MODIFIED}
     assert C.MANIFEST_FILE in results[0].detail
+
+
+# ---------------------------------------------------------------- adapterId
+
+
+def test_manifest_missing_adapter_id_is_reported_and_never_overwritten(tmp_path):
+    # A pre-1.4 (three-field) manifest whose source/gguf still match must be
+    # reported MODIFIED for the missing adapterId, and never silently migrated.
+    seed_source(tmp_path, ALICE)
+    C.convert([ALICE], tmp_path, FakeConverter())
+    manifest_path = ALICE.manifest_path(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["adapterId"]  # regress to a 1.3-era three-field manifest
+    legacy = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    manifest_path.write_text(legacy)
+
+    results = C.convert([ALICE], tmp_path, ExplodingConverter())
+
+    assert statuses(results) == {"alice": C.MODIFIED}
+    assert not results[0].ok
+    assert "adapterId" in results[0].detail
+    # Not overwritten: the legacy manifest is left byte-for-byte untouched.
+    assert manifest_path.read_text() == legacy
+
+
+def test_mismatched_adapter_id_is_reported_modified(tmp_path):
+    seed_source(tmp_path, ALICE)
+    C.convert([ALICE], tmp_path, FakeConverter())
+    manifest_path = ALICE.manifest_path(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["adapterId"] = "sha256:" + ("0" * 64)  # wrong id
+    tampered = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    manifest_path.write_text(tampered)
+
+    results = C.convert([ALICE], tmp_path, ExplodingConverter())
+
+    assert statuses(results) == {"alice": C.MODIFIED}
+    assert "adapterId" in results[0].detail
+    assert manifest_path.read_text() == tampered  # never overwritten
+
+
+def test_identical_source_bytes_yield_identical_adapter_id_across_paths(tmp_path):
+    # Same bytes under different dirs/names -> identity ignores path.
+    weights = b"identical-adapter-weights"
+    seed_source(tmp_path, ALICE, weights)
+    seed_source(tmp_path, BOB, weights)
+
+    C.convert([ALICE, BOB], tmp_path, FakeConverter())
+
+    alice = json.loads(ALICE.manifest_path(tmp_path).read_text())
+    bob = json.loads(BOB.manifest_path(tmp_path).read_text())
+    assert alice["adapterId"] == bob["adapterId"] == "sha256:" + sha(weights)
 
 
 # ---------------------------------------------------------------- partial set

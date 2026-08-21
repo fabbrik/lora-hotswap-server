@@ -72,13 +72,17 @@ For each adapter this obtains a pinned copy of llama.cpp's
 `convert_lora_to_gguf.py` (recorded in `tools/convert/converter.lock.json`,
 vendored under `tools/convert/vendor/` and never committed), produces
 `adapters/<name>/adapter.gguf`, and writes a sidecar
-`adapters/<name>/adapter.manifest.json` binding the source safetensors hash, the
-produced GGUF hash, and the converter revision. Each adapter's outcome
-(converted / already-current / modified / failed) is reported; the run exits
-non-zero iff any adapter is modified or failed. Re-running is safe: with the gguf
-+ manifest present and their hashes matching, it reconverts nothing and exits 0.
-Neither the `.gguf` files nor the manifests are committed -- provenance is
-per-local-conversion.
+`adapters/<name>/adapter.manifest.json` with four fields: the source safetensors
+hash (`sourceSha256`), the produced GGUF hash (`ggufSha256`), the converter
+revision (`converterRevision`), and `adapterId` -- the stable, content-derived
+adapter identity (`sha256:` + the SHA-256 of the source safetensors). Identity
+comes from content only: it is invariant across renames and moves and is never a
+path, so logs, errors, and responses can name an adapter by it. Each adapter's
+outcome (converted / already-current / modified / failed) is reported; the run
+exits non-zero iff any adapter is modified or failed. Re-running is safe: with
+the gguf + manifest present and all four fields matching disk, it reconverts
+nothing and exits 0. Neither the `.gguf` files nor the manifests are committed --
+provenance is per-local-conversion.
 
 > **Note:** a *cold* conversion is not offline. It fetches the pinned converter
 > from GitHub and each adapter's declared base-model `config.json` from the
@@ -86,9 +90,11 @@ per-local-conversion.
 > vendored and the adapters are converted, subsequent (warm) runs touch neither.
 
 If an adapter's on-disk `adapter.gguf` or `adapter.manifest.json` no longer
-matches its recorded hashes, it is reported as `modified` and left untouched
-(the tool never overwrites); the run exits non-zero. To rebuild that one, delete
-its `adapter.gguf` and `adapter.manifest.json` and re-run.
+matches its recorded hashes -- or its manifest is missing or disagrees on
+`adapterId` (e.g. a pre-1.4 three-field manifest) -- it is reported as `modified`
+and left untouched (the tool never overwrites or migrates); the run exits
+non-zero. To rebuild that one, delete its `adapter.gguf` and
+`adapter.manifest.json` and re-run.
 
 ### 3. Build and test the .NET solution
 

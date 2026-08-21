@@ -194,6 +194,19 @@ byte-identical across machines/library versions, which is exactly why the
 `ggufSha256` and the manifests are computed per-local-conversion and never
 committed — a committed hash would fail a fresh clone's warm-path check.
 
+### [NOTE] `adapterId` is machine-stable; `ggufSha256` is not — don't conflate them
+
+The manifest carries two content hashes with different stability. `adapterId`
+(`sha256:` + the SHA-256 of the *source* `adapter_model.safetensors`) is
+deterministic across machines — the source bytes are identical everywhere — so it
+is a safe, path-independent identity to name an adapter by in logs, errors, and
+responses. `ggufSha256`, by contrast, is the *derived* GGUF's hash, which is not
+byte-stable across machines/library versions (previous NOTE); never treat it as
+an identity. A pre-1.4 manifest predates `adapterId` and has only three fields;
+the warm path reports such an adapter `modified` (missing `adapterId`) and leaves
+it untouched — reconvert to regenerate the four-field manifest, never hand-edit
+the field in.
+
 ### [NOTE] Vendoring fetches the converter by commit SHA, which the remote must allow
 
 `convert.py` obtains the converter with `git fetch --depth 1 origin <sha>` then
