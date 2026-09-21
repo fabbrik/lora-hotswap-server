@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace LoraHotswap.Core;
 
 /// <summary>A tenant-scoped generation request.</summary>
@@ -15,12 +17,70 @@ public sealed record TenantRequest(TenantId Tenant, string Prompt);
 /// <param name="AppliedAdapters">The exact applied set the runtime reported.</param>
 /// <param name="BindingStrategy">The active binding strategy (AD-9).</param>
 /// <param name="Text">The generated text.</param>
+/// <param name="Timings">What each pipeline stage cost (Story 2.6).</param>
 public sealed record TenantResponse(
     TenantId Tenant,
     AdapterId Adapter,
     IReadOnlySet<AdapterId> AppliedAdapters,
     string BindingStrategy,
-    string Text);
+    string Text,
+    RequestTimings Timings);
+
+/// <summary>
+/// What each pipeline stage cost, in whole microseconds (NFR4). This is the project's
+/// only measurement path: the serving pipeline measures the stages it owns and the
+/// binding strategy reports acquisition and application separately, because the two
+/// strategies differ in which of them happens at request time. Every figure is
+/// present on every successful response -- never omitted, sampled, or zero-suppressed.
+/// A stage that genuinely does no work at request time reports <c>0</c>, which is the
+/// true answer rather than a missing measurement.
+/// </summary>
+/// <param name="AdapterResolutionMicroseconds">Resolving the tenant to an admitted adapter.</param>
+/// <param name="ContextAcquisitionMicroseconds">Acquiring an exclusive context lease.</param>
+/// <param name="AdapterApplicationMicroseconds">Applying the adapter at request time; <c>0</c> when it was applied at startup.</param>
+/// <param name="GenerationMicroseconds">Generating through the runtime.</param>
+public sealed record RequestTimings(
+    long AdapterResolutionMicroseconds,
+    long ContextAcquisitionMicroseconds,
+    long AdapterApplicationMicroseconds,
+    long GenerationMicroseconds)
+{
+    /// <summary>Every figure is a non-negative whole microsecond (NFR4), enforced where it is built.</summary>
+    public long AdapterResolutionMicroseconds { get; } = NonNegative(AdapterResolutionMicroseconds);
+
+    /// <inheritdoc cref="AdapterResolutionMicroseconds"/>
+    public long ContextAcquisitionMicroseconds { get; } = NonNegative(ContextAcquisitionMicroseconds);
+
+    /// <inheritdoc cref="AdapterResolutionMicroseconds"/>
+    public long AdapterApplicationMicroseconds { get; } = NonNegative(AdapterApplicationMicroseconds);
+
+    /// <inheritdoc cref="AdapterResolutionMicroseconds"/>
+    public long GenerationMicroseconds { get; } = NonNegative(GenerationMicroseconds);
+
+    private static long NonNegative(long microseconds) =>
+        microseconds >= 0 ? microseconds : throw new ArgumentOutOfRangeException(
+            nameof(microseconds), microseconds, "A stage cannot take a negative number of microseconds.");
+
+    /// <summary>
+    /// Whole microseconds between two <see cref="Stopwatch.GetTimestamp"/> readings.
+    /// Truncated, never rounded up: a stage faster than a microsecond reports <c>0</c>
+    /// rather than inventing precision it does not have.
+    /// </summary>
+    public static long Microseconds(long startTimestamp, long endTimestamp)
+    {
+        if (endTimestamp <= startTimestamp)
+        {
+            return 0;
+        }
+
+        double microseconds = Stopwatch.GetElapsedTime(startTimestamp, endTimestamp).TotalMicroseconds;
+        return microseconds <= 0 ? 0 : (long)microseconds;
+    }
+
+    /// <summary>Whole microseconds elapsed since <paramref name="startTimestamp"/>.</summary>
+    public static long MicrosecondsSince(long startTimestamp) =>
+        Microseconds(startTimestamp, Stopwatch.GetTimestamp());
+}
 
 /// <summary>
 /// Serves a tenant-scoped request, failing closed (AD-7): unknown tenant, unmatched
@@ -61,6 +121,7 @@ public sealed class TenantServingService
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Prompt);
 
+        long resolutionStarted = Stopwatch.GetTimestamp();
         AdmittedAdapter adapter = _registry.ResolveTenant(request.Tenant)
             ?? throw new RequestProblemException(RequestProblem.UnknownTenant(request.Tenant));
 
@@ -72,8 +133,13 @@ public sealed class TenantServingService
                 RequestProblem.BaseModelMismatch(request.Tenant, adapter, _configuredBaseModel));
         }
 
+        // Resolution ends here: everything after this point is the lease's and the
+        // runtime's time, and folding it in would make this field whole-request latency.
+        long resolutionMicroseconds = RequestTimings.MicrosecondsSince(resolutionStarted);
+
         await using ContextLease lease = await _strategy.LeaseAsync(request.Tenant, adapter, cancellationToken);
 
+        long generationStarted = Stopwatch.GetTimestamp();
         InferenceResult result;
         try
         {
@@ -88,6 +154,8 @@ public sealed class TenantServingService
             throw new RequestProblemException(RequestProblem.GenerationFailed(request.Tenant, adapter.Id), ex);
         }
 
+        long generationMicroseconds = RequestTimings.MicrosecondsSince(generationStarted);
+
         // The routing claim (AD-5): the runtime must report exactly this tenant's adapter
         // applied. An empty or foreign set means the output was not produced with it.
         if (result.AppliedAdapters is not { Count: 1 } applied || !applied.Contains(adapter.Id))
@@ -99,6 +167,14 @@ public sealed class TenantServingService
                 request.Tenant, adapter.Id, $"the runtime reported applied adapters {reported}"));
         }
 
-        return new TenantResponse(request.Tenant, applied.Single(), applied, _strategy.Name, result.Text);
+        // Every figure comes from this pipeline and the lease it held: one measurement
+        // path, so Story 2.8 has nothing else it could prefer.
+        var timings = new RequestTimings(
+            resolutionMicroseconds,
+            lease.AcquisitionMicroseconds,
+            lease.ApplicationMicroseconds,
+            generationMicroseconds);
+
+        return new TenantResponse(request.Tenant, applied.Single(), applied, _strategy.Name, result.Text, timings);
     }
 }

@@ -52,6 +52,142 @@ public sealed class ServingEndpointTests
         await AssertProblem(response, HttpStatusCode.NotFound, ProblemTypes.UnknownTenant);
     }
 
+    // --- Story 2.6: in-band timings, asserted on the wire --------------------------------
+
+    /// <summary>The four field names a reader with only <c>curl</c> must find in the body (NFR4).</summary>
+    private static readonly string[] TimingFields =
+        ["adapter_resolution_us", "context_acquisition_us", "adapter_application_us", "generation_us"];
+
+    [Theory]
+    [MemberData(nameof(TenantServingTests.Strategies), MemberType = typeof(TenantServingTests))]
+    public async Task Successful_body_carries_all_four_us_named_integer_timings(string strategy)
+    {
+        await using var host = await Host.StartAsync(strategy);
+
+        using HttpResponseMessage response = await host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "hello" }, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement body = await response.Content.ReadFromJsonAsync<JsonElement>(Ct);
+        JsonElement timings = body.GetProperty("timings");
+
+        // Exactly the four fields, spelled with the _us suffix -- camelCase would not.
+        Assert.Equal(TimingFields.Order(StringComparer.Ordinal),
+            timings.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+        Assert.All(TimingFields, name =>
+        {
+            JsonElement value = timings.GetProperty(name);
+            Assert.Equal(JsonValueKind.Number, value.ValueKind);
+            Assert.True(value.TryGetInt64(out long microseconds), $"'{name}' must be an integer, not '{value.GetRawText()}'.");
+            Assert.True(microseconds >= 0, $"'{name}' reported {microseconds}; microseconds are non-negative.");
+        });
+    }
+
+    [Fact]
+    public async Task Resident_strategy_reports_zero_application_on_the_wire_and_still_measures_acquisition()
+    {
+        await using var host = await Host.StartAsync(PerTenantResidentStrategy.StrategyName);
+
+        using HttpResponseMessage response = await host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "hello" }, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement timings = (await response.Content.ReadFromJsonAsync<JsonElement>(Ct)).GetProperty("timings");
+        Assert.Equal(0L, timings.GetProperty("adapter_application_us").GetInt64());
+    }
+
+    [Fact]
+    public async Task Acquisition_time_lands_in_the_acquisition_field_on_the_wire()
+    {
+        // The remaining two wire fields: with every stage small, resolution and acquisition
+        // could be transposed at the mapping and no test would see it. Contention makes
+        // acquisition the large one.
+        await using var host = await Host.StartAsync(PerRequestApplyStrategy.StrategyName, poolSize: 1,
+            leaseTimeout: TimeSpan.FromSeconds(30));
+        ContextLease held = await host.World.Strategy.LeaseAsync(TenantServingTests.World.Alice,
+            host.World.AliceAdapter, CancellationToken.None);
+
+        Task<HttpResponseMessage> serving = host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "hello" }, Ct);
+        await Task.Delay(TimeSpan.FromMilliseconds(30), Ct);
+        await held.DisposeAsync();
+
+        using HttpResponseMessage response = await serving;
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement timings = (await response.Content.ReadFromJsonAsync<JsonElement>(Ct)).GetProperty("timings");
+        Assert.True(timings.GetProperty("context_acquisition_us").GetInt64() > 20_000,
+            "The request waited ~30 ms for the single context, so context_acquisition_us must carry it.");
+        Assert.All(new[] { "adapter_resolution_us", "adapter_application_us", "generation_us" },
+            name => Assert.True(timings.GetProperty(name).GetInt64() < 10_000,
+                $"{name} carries the lease wait, so the wire fields are transposed."));
+    }
+
+    [Fact]
+    public async Task Each_stage_lands_in_its_own_wire_field()
+    {
+        // The Core-to-wire copy is positional: with every stage near zero, transposing two
+        // fields would serialize happily. A runtime that spends real time in exactly one
+        // stage pins each name to the stage it claims to measure.
+        var slowGeneration = new TenantServingTests.SlowRuntime { GenerateDelay = TimeSpan.FromMilliseconds(25) };
+        await using var host = await Host.StartAsync(PerRequestApplyStrategy.StrategyName, slowGeneration);
+
+        using HttpResponseMessage response = await host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "hello" }, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement timings = (await response.Content.ReadFromJsonAsync<JsonElement>(Ct)).GetProperty("timings");
+        Assert.True(timings.GetProperty("generation_us").GetInt64() > 10_000,
+            "The runtime spent 25 ms generating, so generation_us must carry it.");
+        Assert.All(new[] { "adapter_resolution_us", "context_acquisition_us", "adapter_application_us" },
+            name => Assert.True(timings.GetProperty(name).GetInt64() < 10_000,
+                $"{name} carries the generation time, so the wire fields are transposed."));
+    }
+
+    [Fact]
+    public async Task Application_time_lands_in_the_application_field_on_the_wire()
+    {
+        var slowApply = new TenantServingTests.SlowRuntime { ApplyDelay = TimeSpan.FromMilliseconds(25) };
+        await using var host = await Host.StartAsync(PerRequestApplyStrategy.StrategyName, slowApply);
+
+        using HttpResponseMessage response = await host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "hello" }, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        JsonElement timings = (await response.Content.ReadFromJsonAsync<JsonElement>(Ct)).GetProperty("timings");
+        Assert.True(timings.GetProperty("adapter_application_us").GetInt64() > 10_000,
+            "The runtime spent 25 ms applying, so adapter_application_us must carry it.");
+        Assert.All(new[] { "adapter_resolution_us", "context_acquisition_us", "generation_us" },
+            name => Assert.True(timings.GetProperty(name).GetInt64() < 10_000,
+                $"{name} carries the application time, so the wire fields are transposed."));
+    }
+
+    [Theory]
+    [MemberData(nameof(TenantServingTests.Strategies), MemberType = typeof(TenantServingTests))]
+    public async Task Rejected_requests_carry_no_timings_and_are_otherwise_unchanged(string strategy)
+    {
+        await using var host = await Host.StartAsync(strategy);
+
+        using HttpResponseMessage unknownTenant = await host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "mallory", prompt = "hello" }, Ct);
+        using HttpResponseMessage invalid = await host.Client.PostAsync("/v1/generate",
+            new StringContent("{\"prompt\":\"hello\"}", System.Text.Encoding.UTF8, "application/json"), Ct);
+
+        JsonElement notFound = await AssertProblem(unknownTenant, HttpStatusCode.NotFound, ProblemTypes.UnknownTenant);
+        JsonElement badRequest = await AssertProblem(invalid, HttpStatusCode.BadRequest, ProblemTypes.InvalidRequest);
+        Assert.All([notFound, badRequest], problem =>
+        {
+            Assert.False(problem.TryGetProperty("timings", out _));
+            Assert.All(TimingFields, name => Assert.DoesNotContain(name, problem.GetRawText(), StringComparison.Ordinal));
+        });
+    }
+
+    [Fact]
+    public async Task Timings_live_in_the_body_not_in_a_header()
+    {
+        await using var host = await Host.StartAsync(PerRequestApplyStrategy.StrategyName);
+
+        using HttpResponseMessage response = await host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "hello" }, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string headers = response.Headers + response.Content.Headers.ToString();
+        Assert.All(TimingFields, name => Assert.DoesNotContain(name, headers, StringComparison.OrdinalIgnoreCase));
+        Assert.True((await response.Content.ReadFromJsonAsync<JsonElement>(Ct)).TryGetProperty("timings", out _));
+    }
+
     [Theory]
     [InlineData("{\"prompt\":\"hello\"}")]
     [InlineData("{\"tenant\":\"  \",\"prompt\":\"hello\"}")]

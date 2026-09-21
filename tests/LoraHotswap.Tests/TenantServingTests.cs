@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using LoraHotswap.Core;
 using LoraHotswap.Infrastructure;
 
@@ -243,6 +244,126 @@ public sealed class TenantServingTests
         Assert.Equal(2, runtime.ApplyCalls);
     }
 
+    // --- 2.6: in-band timings on every response -----------------------------------------
+
+    [Theory]
+    [MemberData(nameof(Strategies))]
+    public async Task Every_successful_response_carries_all_four_stage_timings(string strategy)
+    {
+        var world = await World.CreateAsync(strategy);
+
+        TenantResponse response = await world.Service.ServeAsync(new TenantRequest(World.Alice, "hello"), CancellationToken.None);
+
+        RequestTimings timings = response.Timings;
+        long[] stages =
+        [
+            timings.AdapterResolutionMicroseconds,
+            timings.ContextAcquisitionMicroseconds,
+            timings.AdapterApplicationMicroseconds,
+            timings.GenerationMicroseconds,
+        ];
+
+        Assert.All(stages, value => Assert.True(value >= 0,
+            $"A stage reported {value} microseconds; timings are non-negative integers."));
+    }
+
+    [Fact]
+    public async Task Per_request_strategy_reports_the_application_it_did_at_request_time()
+    {
+        var runtime = new SlowRuntime { ApplyDelay = TimeSpan.FromMilliseconds(15), GenerateDelay = TimeSpan.FromMilliseconds(15) };
+        var world = await World.CreateAsync(PerRequestApplyStrategy.StrategyName, runtime);
+
+        TenantResponse response = await world.Service.ServeAsync(new TenantRequest(World.Alice, "hello"), CancellationToken.None);
+
+        Assert.True(response.Timings.AdapterApplicationMicroseconds > 0,
+            "PerRequestApply applies the adapter inside the lease, so the application figure must reflect that work.");
+        Assert.True(response.Timings.GenerationMicroseconds > 0);
+
+        // Each stage measures only itself. With 15 ms of apply and 15 ms of generation on an
+        // uncontended pool, a stage that folded in another's work would be milliseconds wide:
+        // resolution is a dictionary lookup, and acquisition is an uncontended semaphore.
+        Assert.True(response.Timings.AdapterResolutionMicroseconds < 5_000,
+            $"Resolution is a registry lookup, so it cannot take {response.Timings.AdapterResolutionMicroseconds} us " +
+            "-- it is folding in the lease, the application or the generation.");
+        Assert.True(response.Timings.ContextAcquisitionMicroseconds < 5_000,
+            $"An uncontended pool slot cannot take {response.Timings.ContextAcquisitionMicroseconds} us " +
+            "-- acquisition is folding in the application it should report separately.");
+        Assert.True(response.Timings.AdapterApplicationMicroseconds < 5_000 + response.Timings.GenerationMicroseconds,
+            "Application must not fold in the generation that follows it.");
+    }
+
+    [Fact]
+    public async Task Resident_strategy_reports_zero_application_because_it_applied_at_startup()
+    {
+        var runtime = new SlowRuntime { ApplyDelay = TimeSpan.FromMilliseconds(15), GenerateDelay = TimeSpan.FromMilliseconds(15) };
+        var world = await World.CreateAsync(PerTenantResidentStrategy.StrategyName, runtime);
+
+        TenantResponse response = await world.Service.ServeAsync(new TenantRequest(World.Alice, "hello"), CancellationToken.None);
+
+        // The startup application was slow; none of it may leak into a request's figure.
+        Assert.Equal(0L, response.Timings.AdapterApplicationMicroseconds);
+        Assert.True(response.Timings.GenerationMicroseconds > 0);
+    }
+
+    [Theory]
+    [MemberData(nameof(Strategies))]
+    public async Task Acquisition_is_really_measured_a_contended_context_shows_the_wait(string strategy)
+    {
+        var world = await World.CreateAsync(strategy, poolSize: 1, leaseTimeout: TimeSpan.FromSeconds(30));
+        ContextLease held = await world.Strategy.LeaseAsync(World.Alice, world.AliceAdapter, CancellationToken.None);
+
+        // The call runs synchronously into the lease wait, so the delay below is time
+        // the request genuinely spends acquiring a context.
+        Task<TenantResponse> serving = world.Service.ServeAsync(new TenantRequest(World.Alice, "hello"), CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(30), TestContext.Current.CancellationToken);
+        await held.DisposeAsync();
+
+        TenantResponse response = await serving;
+        Assert.True(response.Timings.ContextAcquisitionMicroseconds > 20_000,
+            $"The request waited ~30 ms for a context, so acquisition cannot report " +
+            $"{response.Timings.ContextAcquisitionMicroseconds} us.");
+
+        // The wait belongs to acquisition alone. If the application clock started before
+        // the queue wait instead of after it, this figure would carry those 30 ms too --
+        // double-counting the wait in the one stage Story 2.8 compares across strategies.
+        if (strategy == PerRequestApplyStrategy.StrategyName)
+        {
+            Assert.True(response.Timings.AdapterApplicationMicroseconds < 5_000,
+                $"Application reported {response.Timings.AdapterApplicationMicroseconds} us: it is folding in the lease wait.");
+        }
+    }
+
+    [Fact]
+    public void A_sub_microsecond_stage_reports_zero_and_is_never_rounded_up()
+    {
+        long start = Stopwatch.GetTimestamp();
+        // Ticks in one microsecond, at least 1 so the sub-microsecond case stays meaningful
+        // on a platform whose timer runs below 1 MHz.
+        long oneMicrosecond = Math.Max(1, Stopwatch.Frequency / 1_000_000);
+
+        Assert.Equal(0L, RequestTimings.Microseconds(start, start));
+        Assert.Equal(0L, RequestTimings.Microseconds(start, start + oneMicrosecond - 1));
+        Assert.Equal(0L, RequestTimings.Microseconds(start, start - oneMicrosecond));
+        // Whole microseconds, not ticks or milliseconds: three milliseconds is 3000.
+        // Derived from the platform's own frequency rather than assuming it divides evenly:
+        // a 3.579545 MHz timer would make a hard-coded 3000 wrong by a microsecond.
+        long threeMilliseconds = (long)(Stopwatch.Frequency * 0.003);
+        Assert.InRange(RequestTimings.Microseconds(start, start + threeMilliseconds), 2_999L, 3_000L);
+    }
+
+    [Theory]
+    [MemberData(nameof(Strategies))]
+    public async Task Rejected_requests_carry_no_timings_because_there_is_no_response_to_carry_them(string strategy)
+    {
+        var world = await World.CreateAsync(strategy);
+
+        var error = await Assert.ThrowsAsync<RequestProblemException>(() =>
+            world.Service.ServeAsync(new TenantRequest(new TenantId("mallory"), "hello"), CancellationToken.None));
+
+        Assert.Equal(ProblemTypes.UnknownTenant, error.Problem.Type);
+        Assert.DoesNotContain("_us", error.Problem.Detail, StringComparison.Ordinal);
+    }
+
     // --- harness ------------------------------------------------------------------------
 
     internal sealed class World
@@ -316,6 +437,25 @@ public sealed class TenantServingTests
         {
             Interlocked.Increment(ref _applyCalls);
             return base.ApplyAdaptersAsync(contextId, adapters, cancellationToken);
+        }
+    }
+
+    /// <summary>Makes each stage cost real, measurable time, so a timing of 0 would be a bug.</summary>
+    internal sealed class SlowRuntime : DeterministicInferenceRuntimeBase
+    {
+        public TimeSpan ApplyDelay { get; init; }
+        public TimeSpan GenerateDelay { get; init; }
+
+        public override async Task ApplyAdaptersAsync(string contextId, IReadOnlySet<AdapterId> adapters, CancellationToken cancellationToken)
+        {
+            await Task.Delay(ApplyDelay, cancellationToken);
+            await base.ApplyAdaptersAsync(contextId, adapters, cancellationToken);
+        }
+
+        public override async Task<InferenceResult> GenerateAsync(string contextId, string prompt, CancellationToken cancellationToken)
+        {
+            await Task.Delay(GenerateDelay, cancellationToken);
+            return await base.GenerateAsync(contextId, prompt, cancellationToken);
         }
     }
 

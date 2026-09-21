@@ -257,17 +257,77 @@ it). All four acquired adapters verify as `match` with a reference error of 0.
 
 No weights are read from a live inference context (AD-5).
 
-#### Tenant serving (Stories 2.1–2.4)
+#### Tenant serving (Stories 2.1–2.4, 2.6)
 
 ```sh
 curl -X POST http://localhost:5000/v1/generate -H 'content-type: application/json' \
      -d '{"tenant":"alice","prompt":"hello"}'
 ```
 
+```json
+{
+  "tenant": "alice",
+  "adapterId": "sha256:883e7904a6c1a71d4ab6694d543d2975a800b0630d3bfe2653cdb3b294fb6378",
+  "appliedAdapters": ["sha256:883e7904a6c1a71d4ab6694d543d2975a800b0630d3bfe2653cdb3b294fb6378"],
+  "bindingStrategy": "PerRequestApply",
+  "text": "fake:sha256:883e7904a6c1a71d4ab6694d543d2975a800b0630d3bfe2653cdb3b294fb6378:hello",
+  "timings": {
+    "adapter_resolution_us": 1,
+    "context_acquisition_us": 2,
+    "adapter_application_us": 9,
+    "generation_us": 34
+  }
+}
+```
+
 The response names the tenant, the adapter the runtime **reported applied**, the
 full applied set, and the active binding strategy. Phase A serves through
 `DeterministicInferenceRuntime` (AD-8), which records the exact adapter set
 applied to each context and returns placeholder text.
+
+##### In-band timings (Story 2.6)
+
+**The response body is the authoritative location for the timings.** They are
+never headers-only and no header is their source of truth, so the binding-strategy
+tradeoff is readable with nothing but `curl` — no collector, no exporter, no
+second measurement path. Story 2.8's comparison table is read from exactly these
+numbers; tracing (Story 2.7) reports the same stages but never substitutes for
+them.
+
+Every successful response carries all four fields — never omitted, never sampled,
+never zero-suppressed. Values are non-negative **integer microseconds** (NFR4 in the PRD: integer
+microseconds with `_us`-suffixed names), measured from `Stopwatch.GetTimestamp()`
+deltas and truncated, so a stage faster than a microsecond reports an honest `0`
+rather than being rounded up:
+
+| Field | Stage |
+| --- | --- |
+| `adapter_resolution_us` | Resolving the tenant to an admitted adapter |
+| `context_acquisition_us` | Acquiring an exclusive context lease |
+| `adapter_application_us` | Applying the adapter **at request time** |
+| `generation_us` | Generating through the runtime |
+
+Both strategies report the same four fields, and the split between acquisition and
+application is what makes them comparable: `PerRequestApply` applies the adapter
+inside the lease, so `adapter_application_us` carries that cost, while
+`PerTenantResident` applied it at startup and reports `0` — the true answer at
+request time, not a missing measurement. Its acquisition is still measured.
+
+The four stages deliberately **do not sum to request latency**. Each measures only
+itself; the handoffs between them, the post-generation routing check, JSON
+serialization and HTTP overhead are outside all four. They are stage costs for
+comparing strategies, not a latency budget.
+
+The exact figures above are from one run on one machine, and under Phase A's
+deterministic fake runtime the per-stage numbers are small and vary run to run —
+a stage can legitimately read `0`. What is stable is the shape: with
+`PerRequestApply`, `adapter_application_us` carries real work; with
+`PerTenantResident`, it is `0`. Read `adapter_application_us` together with
+`bindingStrategy`, since `0` means "applied at startup" for the resident strategy
+and "faster than a microsecond" for the other.
+
+A rejected request is unchanged by this story: an RFC 9457 problem carries no
+`timings`.
 
 The binding strategy is configured under `Serving`:
 

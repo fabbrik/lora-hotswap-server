@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using LoraHotswap.Core;
 
 namespace LoraHotswap.Api;
@@ -15,12 +16,31 @@ public sealed record GenerateRequest(string? Tenant, string? Prompt);
 /// <param name="AppliedAdapters">The exact applied adapter set (never empty).</param>
 /// <param name="BindingStrategy">The active binding strategy (AD-9).</param>
 /// <param name="Text">The generated text.</param>
+/// <param name="Timings">What each pipeline stage cost (Story 2.6).</param>
 public sealed record GenerateResponse(
     string Tenant,
     string AdapterId,
     IReadOnlyList<string> AppliedAdapters,
     string BindingStrategy,
-    string Text);
+    string Text,
+    GenerateTimingsResponse Timings);
+
+/// <summary>
+/// The wire shape of a response's per-stage timings (Story 2.6). The body is the
+/// authoritative location for these figures -- they are never headers-only, and no
+/// header is their source of truth. The JSON names are spelled out because the
+/// serializer's camelCase would render <c>AdapterResolutionUs</c> as
+/// <c>adapterResolutionUs</c>, not the <c>_us</c>-suffixed names NFR4 requires.
+/// </summary>
+/// <param name="AdapterResolutionUs">Resolving the tenant to an admitted adapter.</param>
+/// <param name="ContextAcquisitionUs">Acquiring an exclusive context lease.</param>
+/// <param name="AdapterApplicationUs">Applying the adapter at request time; <c>0</c> when it was applied at startup.</param>
+/// <param name="GenerationUs">Generating through the runtime.</param>
+public sealed record GenerateTimingsResponse(
+    [property: JsonPropertyName("adapter_resolution_us")] long AdapterResolutionUs,
+    [property: JsonPropertyName("context_acquisition_us")] long ContextAcquisitionUs,
+    [property: JsonPropertyName("adapter_application_us")] long AdapterApplicationUs,
+    [property: JsonPropertyName("generation_us")] long GenerationUs);
 
 /// <summary>The wire shape of one module's verification measurement.</summary>
 public sealed record ModuleVerificationResponse(
@@ -127,7 +147,12 @@ public static class ServingEndpoints
                     response.Adapter.Value,
                     response.AppliedAdapters.Select(a => a.Value).Order(StringComparer.Ordinal).ToArray(),
                     response.BindingStrategy,
-                    response.Text));
+                    response.Text,
+                    new GenerateTimingsResponse(
+                        response.Timings.AdapterResolutionMicroseconds,
+                        response.Timings.ContextAcquisitionMicroseconds,
+                        response.Timings.AdapterApplicationMicroseconds,
+                        response.Timings.GenerationMicroseconds)));
             }
             catch (RequestProblemException ex)
             {

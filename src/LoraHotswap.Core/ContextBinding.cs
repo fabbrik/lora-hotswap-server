@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace LoraHotswap.Core;
 
@@ -7,22 +8,45 @@ namespace LoraHotswap.Core;
 /// lease the same context, so only the holder mutates its adapter configuration.
 /// Disposing releases it; disposing twice is harmless.
 /// </summary>
+/// <remarks>
+/// A lease also carries what it cost to obtain (Story 2.6). Only the strategy knows
+/// which of the two stages it actually performed: <c>PerRequestApply</c> applies the
+/// adapter inside the lease, while <c>PerTenantResident</c> applied it at startup and
+/// honestly reports <c>0</c> for application.
+/// </remarks>
 public sealed class ContextLease : IAsyncDisposable
 {
     private readonly Action _release;
     private int _released;
 
     /// <summary>Wrap a held context; <paramref name="release"/> runs exactly once, on dispose.</summary>
-    public ContextLease(string contextId, Action release)
+    /// <param name="contextId">The leased context.</param>
+    /// <param name="release">Runs exactly once, on dispose.</param>
+    /// <param name="acquisitionMicroseconds">What acquiring the context cost, in whole microseconds.</param>
+    /// <param name="applicationMicroseconds">What applying the adapter cost at request time, in whole microseconds.</param>
+    public ContextLease(string contextId, Action release, long acquisitionMicroseconds, long applicationMicroseconds)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(contextId);
         ArgumentNullException.ThrowIfNull(release);
+        ArgumentOutOfRangeException.ThrowIfNegative(acquisitionMicroseconds);
+        ArgumentOutOfRangeException.ThrowIfNegative(applicationMicroseconds);
         ContextId = contextId;
         _release = release;
+        AcquisitionMicroseconds = acquisitionMicroseconds;
+        ApplicationMicroseconds = applicationMicroseconds;
     }
 
     /// <summary>The leased context.</summary>
     public string ContextId { get; }
+
+    /// <summary>What acquiring this context cost, in whole microseconds.</summary>
+    public long AcquisitionMicroseconds { get; }
+
+    /// <summary>
+    /// What applying the adapter cost at request time, in whole microseconds. <c>0</c> when
+    /// the strategy did no application work at request time -- the true answer, not a gap.
+    /// </summary>
+    public long ApplicationMicroseconds { get; }
 
     /// <inheritdoc/>
     public ValueTask DisposeAsync()
@@ -125,6 +149,7 @@ public sealed class PerRequestApplyStrategy : IContextBindingStrategy
     {
         ArgumentNullException.ThrowIfNull(adapter);
 
+        long acquisitionStarted = Stopwatch.GetTimestamp();
         if (!await _slots.WaitAsync(_leaseTimeout, cancellationToken))
         {
             throw new RequestProblemException(RequestProblem.LeaseUnavailable(tenant, Name, _leaseTimeout));
@@ -138,28 +163,35 @@ public sealed class PerRequestApplyStrategy : IContextBindingStrategy
             throw new InvalidOperationException("Context pool accounting is inconsistent: a slot was held with no free context.");
         }
 
-        var lease = new ContextLease(contextId, () =>
+        long acquisitionMicroseconds = RequestTimings.MicrosecondsSince(acquisitionStarted);
+
+        void Release()
         {
             _free.Enqueue(contextId);
             _slots.Release();
-        });
+        }
 
+        // Application is timed separately from acquisition: this strategy exists to make
+        // exactly that cost visible, so it may never be folded into the wait.
+        long applicationStarted = Stopwatch.GetTimestamp();
         try
         {
             await _runtime.ApplyAdaptersAsync(contextId, new HashSet<AdapterId> { adapter.Id }, cancellationToken);
-            return lease;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await lease.DisposeAsync();
+            Release();
             throw;
         }
         catch (Exception ex)
         {
-            await lease.DisposeAsync();
+            Release();
             throw new RequestProblemException(
                 RequestProblem.AdapterNotApplied(tenant, adapter.Id, "the runtime failed to apply it on lease"), ex);
         }
+
+        return new ContextLease(contextId, Release, acquisitionMicroseconds,
+            RequestTimings.MicrosecondsSince(applicationStarted));
     }
 }
 
@@ -224,6 +256,7 @@ public sealed class PerTenantResidentStrategy : IContextBindingStrategy
     {
         ArgumentNullException.ThrowIfNull(adapter);
 
+        long acquisitionStarted = Stopwatch.GetTimestamp();
         if (_residents is null || !_residents.TryGetValue(tenant, out Resident? resident))
         {
             throw new RequestProblemException(
@@ -241,7 +274,10 @@ public sealed class PerTenantResidentStrategy : IContextBindingStrategy
             throw new RequestProblemException(RequestProblem.LeaseUnavailable(tenant, Name, _leaseTimeout));
         }
 
-        return new ContextLease(resident.ContextId, () => resident.Gate.Release());
+        // Application is 0, and honestly so: this strategy applied the adapter at startup,
+        // so no application work happens at request time. Acquisition is still measured.
+        return new ContextLease(resident.ContextId, () => resident.Gate.Release(),
+            RequestTimings.MicrosecondsSince(acquisitionStarted), 0);
     }
 
     private sealed record Resident(string ContextId, AdapterId AdapterId)

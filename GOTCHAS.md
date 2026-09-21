@@ -378,6 +378,16 @@ with a reference error of exactly 0 (bit-identical to PEFT's fp32 merge).
 and breaks "re-running rewrites byte-identical files". The generator now sorts
 `target_modules` before writing.
 
+### [TRAP] `_us` field names cannot survive the default JSON policy
+
+NFR4 requires `adapter_resolution_us` and friends on the wire, but minimal APIs
+serialize with the camelCase policy, which turns `AdapterResolutionMicroseconds`
+into `adapterResolutionUs` — no underscores, and the unit suffix silently mangled.
+Every property on the timings DTO therefore carries an explicit
+`[property: JsonPropertyName]`, and the endpoint tests assert the names on the raw
+JSON rather than on the C# record, so a dropped attribute fails rather than
+quietly renaming a documented field.
+
 ### [TRAP] Serving ports need `AdapterId`, but `Core.Ports` may reference nothing
 
 `IInferenceRuntime`, `IContextBindingStrategy` and `IAdapterVerifier` take
