@@ -6,6 +6,14 @@
     <ProjectReference Include="..\LoraHotswap.Infrastructure\LoraHotswap.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- AD-10 / Story 1.8: the one ActivitySource ("LoraHotswap") exported to the
+         console with no collector running, and to OTLP when an endpoint is set. -->
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.18.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.18.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.18.0" />
+  </ItemGroup>
+
   <PropertyGroup>
   </PropertyGroup>
 

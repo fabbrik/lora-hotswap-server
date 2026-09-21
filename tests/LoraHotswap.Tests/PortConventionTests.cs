@@ -5,22 +5,23 @@ namespace LoraHotswap.Tests;
 /// <summary>
 /// NFR6: every port method is async and accepts a CancellationToken.
 ///
-/// The rules pass vacuously against Core.Ports today -- no port exists yet, and
-/// that is the intended state. Because a vacuous pass is indistinguishable from
-/// a broken scanner, the scanner is separately proven against deliberately
-/// non-conforming fixtures below. Without that proof these tests would assert
-/// nothing at all until Story 2.1.
+/// Ports live in two assemblies: Core.Ports, which references nothing, and Core, which
+/// declares the ports whose signatures need Core's value types (<c>IInferenceRuntime</c>,
+/// <c>IContextBindingStrategy</c>, <c>IAdapterVerifier</c>). Both are scanned. Because a
+/// vacuous pass is indistinguishable from a broken scanner, the scanner is separately
+/// proven against deliberately non-conforming fixtures below.
 /// </summary>
 public class PortConventionTests
 {
-    private static Assembly Ports => Assembly.Load("LoraHotswap.Core.Ports");
+    private static IEnumerable<Assembly> PortAssemblies =>
+        [Assembly.Load("LoraHotswap.Core.Ports"), Assembly.Load("LoraHotswap.Core")];
 
     // --- the rules, applied to the real ports assembly ----------------------
 
     [Fact]
     public void Port_methods_are_async()
     {
-        var offenders = NonAsync(PortInterfacesIn(Ports));
+        var offenders = NonAsync(PortAssemblies.SelectMany(PortInterfacesIn));
 
         Assert.True(offenders.Count == 0,
             "Port methods must return Task, Task<T>, ValueTask, or ValueTask<T>:" +
@@ -30,11 +31,23 @@ public class PortConventionTests
     [Fact]
     public void Port_methods_accept_a_cancellation_token()
     {
-        var offenders = WithoutCancellationToken(PortInterfacesIn(Ports));
+        var offenders = WithoutCancellationToken(PortAssemblies.SelectMany(PortInterfacesIn));
 
         Assert.True(offenders.Count == 0,
             "Port methods must accept a CancellationToken:" +
             Environment.NewLine + string.Join(Environment.NewLine, offenders));
+    }
+
+    [Fact]
+    public void The_serving_and_verification_ports_are_in_scope()
+    {
+        // Guards against the scan silently losing Core: these must be found and checked.
+        var scanned = PortAssemblies.SelectMany(PortInterfacesIn).Select(t => t.Name).ToHashSet();
+
+        Assert.Contains("IInferenceRuntime", scanned);
+        Assert.Contains("IContextBindingStrategy", scanned);
+        Assert.Contains("IAdapterVerifier", scanned);
+        Assert.Contains("IAdapterArtifactsReader", scanned);
     }
 
     // --- proof that the scanner detects what it claims to --------------------

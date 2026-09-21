@@ -178,5 +178,125 @@ deterministically and dependency-free by `make_admission_fixtures.py` — each
 directory carries a tiny `.gguf` stand-in and a manifest whose hashes are computed
 to match (or deliberately not).
 
+#### Merge verification (Story 1.7)
+
+`MergeVerifier` (Infrastructure) checks an adapter's merge **two-sidedly**, module
+by module: the computed `W' = W0 + scaling · (B @ A)` must match the Python PEFT
+merged weight within `1e-5` **and** differ from `W0` by more than that tolerance.
+Either side alone never passes: reference equality proves the arithmetic, and
+difference from base proves the adapter does something. The merge is rung 1's
+arithmetic (`MergeArithmetic`), the tensors are read by the ported `SafeTensors.cs`,
+and scaling comes from `AdapterConfig.Scaling`. Shapes are checked explicitly so
+broadcasting can't hide a transposed or wrong-rank delta.
+
+The references are real PEFT output. `tests/LoraHotswap.Tests/fixtures/make_merge_fixtures.py`
+follows rung 1's PEFT recipe (build base, `get_peft_model`, `merge_and_unload`) and runs
+in rung 1's locked environment. It writes `fixtures/merge/scaling-4/`
+(alpha/r = 4) and `fixtures/merge/scaling-1/` (alpha/r = 1), each holding the adapter
+plus `merge_reference.safetensors` (`<module>.w0` / `<module>.w_merged`):
+
+```sh
+cd tests/LoraHotswap.Tests/fixtures
+uv run --project ../../../../lora-anatomy-dotnet/reference python make_merge_fixtures.py
+```
+
+**Scaling 1 cannot catch a missing scaling factor on its own**: `W0 + B@A` equals
+`W0 + 1·B@A`. The suite shows the same wrong implementation passing on scaling 1
+and failing on scaling 4.
+
+#### Admission tracing (Story 1.8)
+
+The system has one `ActivitySource`, `LoraHotswap`. Admission emits one
+`adapter.admission` span per adapter, carrying `adapter.id`, `adapter.name` (a
+label), `admission.result` (`admitted` / `rejected` / `error`) and
+`admission.reason`. A rejected adapter's `adapter.id` is the content hash of its
+source bytes; an adapter with no source bytes is tagged `unidentified`, never a
+path. Spans go to the console by default, with no collector needed. Set
+`OpenTelemetry:OtlpEndpoint` (or `OTEL_EXPORTER_OTLP_ENDPOINT`) to also export
+over OTLP. `OpenTelemetry:OtlpProtocol` (`grpc` or `http/protobuf`) overrides the
+protocol; when it is empty, `OTEL_EXPORTER_OTLP_PROTOCOL` applies, then `grpc`. With
+`http/protobuf`, a base endpoint such as `http://collector:4318` has `/v1/traces`
+appended. Only `LoraHotswap` spans are exported, so every exported span carries
+`adapter.id`. An invalid protocol or endpoint fails startup with a reason line.
+
+#### Running-instance verification (Story 1.9)
+
+```sh
+curl -X POST http://localhost:5000/v1/adapters/sha256:<hash>/verify
+```
+
+This runs the Story 1.7 verification for an admitted adapter against the
+`merge_reference.safetensors` next to its source safetensors. It first re-hashes
+the source file against the admitted identity, so an adapter changed on disk
+since admission is reported as drift, never verified under the old identity. It
+uses the admitted config's scaling and checks every module the reference covers.
+It returns `match`, `mismatch` or `inert`, with per-module measurements, and emits
+an `adapter.verification` span carrying `adapter.id` and `verification.outcome`
+(`unidentified` for a malformed ID). Failures return typed problems:
+
+| Case | Status | Problem type |
+| --- | --- | --- |
+| Malformed adapter ID (not `sha256:` + 64 lowercase hex) | 400 | `invalid-request` |
+| Adapter was never admitted | 404 | `unknown-adapter` |
+| Adapter's source changed since admission | 409 | `hash-mismatch` |
+| Adapter has no reference | 422 | `merge-reference-missing` |
+| Unexpected fault (e.g. an unreadable reference) | 500 | `internal-error` |
+
+The real adapters' references are generated, not committed (they are 75–117 MB
+each and live in the gitignored `adapters/`). Generate them once after
+acquisition:
+
+```sh
+uv run --project ../lora-anatomy-dotnet/reference python tools/reference/make_references.py
+```
+
+The tool merges each adapter with PEFT's `merge_and_unload` and writes `w0` /
+`w_merged` for 6 targeted modules spread across the layers (`N_TARGETS`). The base
+is `unsloth/Qwen3-0.6B`, rung 1's cached mirror of Qwen3-0.6B (`BASE_ID` overrides
+it). All four acquired adapters verify as `match` with a reference error of 0.
+
+No weights are read from a live inference context (AD-5).
+
+#### Tenant serving (Stories 2.1–2.4)
+
+```sh
+curl -X POST http://localhost:5000/v1/generate -H 'content-type: application/json' \
+     -d '{"tenant":"alice","prompt":"hello"}'
+```
+
+The response names the tenant, the adapter the runtime **reported applied**, the
+full applied set, and the active binding strategy. Phase A serves through
+`DeterministicInferenceRuntime` (AD-8), which records the exact adapter set
+applied to each context and returns placeholder text.
+
+The binding strategy is configured under `Serving`:
+
+- **`PerRequestApply`** (default): `ContextPoolSize` generic contexts (default 4).
+  The tenant's adapter is applied on every lease.
+- **`PerTenantResident`**: one context per tenant, with its adapter applied once
+  at startup. A failure there exits startup non-zero.
+
+A request waits up to `LeaseTimeoutMilliseconds` (default 2000) for a free
+context. A context is never shared between concurrent requests.
+
+Every rejection is fail-closed and typed, under one `https://lora-hotswap/problems/`
+prefix:
+
+| Problem type | Status | Notes |
+| --- | --- | --- |
+| `invalid-request` | 400 | Missing or blank fields, a malformed JSON body, or a non-JSON content type |
+| `unknown-tenant` | 404 | |
+| `lease-unavailable` | 503 | Sent with `Retry-After` |
+| `adapter-not-applied` | 500 | Also returned when the runtime reports an empty or foreign applied set |
+| `generation-failed` | 500 | |
+| `base-model-mismatch` | 500 | |
+| `internal-error` | 500 | An unexpected fault; the detail is generic |
+
+`inert-adapter` is rejected only at admission, and fails startup: it never reaches
+a request. `base-model-mismatch` is also rejected at admission; the serve path
+re-checks it. Warning and error logs name the tenant and its adapter. No
+code path returns output without the tenant's adapter reported applied, and
+problem details never carry internal exception text.
+
 See `tools/acquire/acquire.py` for the acquisition tool's own docstring, and
 `GOTCHAS.md` for issues hit along the way.

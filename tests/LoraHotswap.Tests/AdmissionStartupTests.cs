@@ -50,6 +50,9 @@ public class AdmissionStartupTests
         Assert.True(outcome.Succeeded);
         Assert.Empty(outcome.Problems);
         Assert.NotNull(outcome.Registry!.ResolveTenant(new TenantId("t1")));
+        // The running-instance verifier locates files through this map; an empty map would
+        // make every verify of an admitted adapter a 404.
+        Assert.Equal("adapters/a", outcome.AdapterDirectories[new AdapterId(GoodId)]);
     }
 
     [Fact]

@@ -9,6 +9,14 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit.v3" Version="3.2.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- In-process HTTP host for the endpoint tests: the real route handlers and
+         problem-details mapping, with no socket bound. Pinned to the installed
+         ASP.NET Core runtime. -->
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>

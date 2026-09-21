@@ -321,3 +321,69 @@ matters for the hash comparison, not GGUF validity — no llama.cpp, no multi-MB
 container. `make_admission_fixtures.py` (stdlib `struct`/`json`/`hashlib` only)
 regenerates all six directories byte-identically under
 `tests/LoraHotswap.Tests/fixtures/admission/`, each well under 1 MB.
+
+### [HIT] The OpenTelemetry `TracerProvider` does not exist until the host starts — after admission
+
+`AddOpenTelemetry().WithTracing(...)` builds the `TracerProvider` in a hosted
+service, which runs on `app.Run()`. Admission runs before that, between `Build()`
+and `Run()`, so every `adapter.admission` span was started with no listener and
+silently dropped. The unit tests missed it because they attach their own
+`ActivityListener`.
+
+Resolution: the composition root (`LoraHotswapHost.BuildAsync`, called by
+`Program.cs`) resolves `TracerProvider` from `app.Services` right after `Build()`,
+and force-flushes it (bounded to 5 s) after admission so a failing startup still
+exports its spans before exiting. `HostCompositionTests` runs the real composition
+and fails if the early resolution is removed.
+
+### [HIT] ASP.NET Core's unsampled request activity drops every child span
+
+With logging on, ASP.NET Core wraps each request in an activity. If nothing records
+that activity, it is unsampled. The default parent-based sampler then drops every
+child, so `adapter.verification` never reached the console exporter, even though a
+raw `ActivityListener` still saw it. The endpoint tests hid this because their test
+host cleared the logging providers, and with no enabled diagnostics there is no
+parent activity at all.
+
+Resolution: an `AlwaysOnSampler`, so every `LoraHotswap` span is recorded whatever
+its parent. The first fix, `AddAspNetCoreInstrumentation()`, also worked, but it
+exported an HTTP server span per request with no `adapter.id`, breaking Story 1.8's
+"every span carries `adapter.id`". The regression test (`AdmissionConsoleExportTests`)
+keeps default logging on and asserts against the real console exporter.
+
+### [TRAP] An OTLP endpoint set in code is used verbatim — `http/protobuf` gets no `/v1/traces`
+
+The exporter appends the signal path only to an endpoint that comes from
+`OTEL_EXPORTER_OTLP_ENDPOINT`. `OpenTelemetry:OtlpEndpoint` is assigned in code, so
+`http://collector:4318` with `http/protobuf` posted to the collector root and every
+export was dropped. `AddLoraHotswapTracing` now appends `v1/traces` to a base
+`http/protobuf` endpoint. It also sets the protocol only when `OtlpProtocol` is
+configured, because always setting it silently overrode `OTEL_EXPORTER_OTLP_PROTOCOL`.
+
+### [NOTE] Real merge references are a sample, and the base comes from `unsloth/Qwen3-0.6B`
+
+A reference holding `w0` and `w_merged` for every targeted module of Qwen3-0.6B
+would be gigabytes per adapter. `tools/reference/make_references.py` writes 6
+modules spread across the layers (75–117 MB per adapter), and the verifier checks
+exactly the modules the reference covers. Only the config of `Qwen/Qwen3-0.6B` was
+in the Hugging Face cache; the weights were cached as `unsloth/Qwen3-0.6B`, the mirror
+rung 1 used, so that is the tool's default `BASE_ID`. All four real adapters verify
+with a reference error of exactly 0 (bit-identical to PEFT's fp32 merge).
+
+### [HIT] PEFT writes `target_modules` in set order, which follows `PYTHONHASHSEED`
+
+`make_merge_fixtures.py` produced byte-identical tensors on every run, but
+`adapter_config.json` changed between runs: `["q_proj","v_proj"]` versus
+`["v_proj","q_proj"]`. That changes the file's hash, which fails provenance checks
+and breaks "re-running rewrites byte-identical files". The generator now sorts
+`target_modules` before writing.
+
+### [TRAP] Serving ports need `AdapterId`, but `Core.Ports` may reference nothing
+
+`IInferenceRuntime`, `IContextBindingStrategy` and `IAdapterVerifier` take
+`AdapterId`/`TenantId` value types (NFR8), which live in `Core`. Putting the ports
+in `Core.Ports` would force `Core.Ports -> Core`, and moving the value types would
+break the "interfaces only" rule. They are declared in `Core` instead, and
+`PortConventionTests` now scans both assemblies. A guard test fails if the scan
+stops finding them.
+

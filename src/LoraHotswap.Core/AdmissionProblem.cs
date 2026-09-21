@@ -13,7 +13,7 @@ namespace LoraHotswap.Core;
 public sealed record AdmissionProblem
 {
     /// <summary>The stable prefix shared by every admission problem <see cref="Type"/> URI.</summary>
-    public const string TypeUriPrefix = "https://lora-hotswap/problems/";
+    public const string TypeUriPrefix = ProblemTypes.Prefix;
 
     private AdmissionProblem(
         string type,
@@ -48,7 +48,7 @@ public sealed record AdmissionProblem
 
     /// <summary>An adapter directory with no <c>adapter.manifest.json</c>.</summary>
     public static AdmissionProblem MissingManifest(string adapterName) => new(
-        TypeUriPrefix + "missing-manifest",
+        ProblemTypes.MissingManifest,
         "Adapter manifest is missing",
         $"Adapter '{adapterName}' has no adapter.manifest.json; provenance is never inferred " +
         "from filenames, timestamps, directory names, or GGUF metadata.",
@@ -61,7 +61,7 @@ public sealed record AdmissionProblem
     /// </summary>
     public static AdmissionProblem HashMismatch(
         string adapterName, string which, string? manifestHash, string? recomputedHash) => new(
-        TypeUriPrefix + "hash-mismatch",
+        ProblemTypes.HashMismatch,
         "Adapter provenance hash mismatch",
         $"Adapter '{adapterName}' {which} hash diverged: manifest recorded '{manifestHash ?? "(absent)"}' " +
         $"but the {which} file on disk hashes to '{recomputedHash ?? "(absent)"}'.",
@@ -71,7 +71,7 @@ public sealed record AdmissionProblem
     /// <summary>The declared base model does not strictly equal the configured base model.</summary>
     public static AdmissionProblem BaseModelMismatch(
         string adapterName, string declaredBase, string configuredBase) => new(
-        TypeUriPrefix + "base-model-mismatch",
+        ProblemTypes.BaseModelMismatch,
         "Adapter base-model mismatch",
         $"Adapter '{adapterName}' declares base model '{declaredBase}' but the configured base model is " +
         $"'{configuredBase}'. Base matching is a deliberate strict string comparison -- no normalization.",
@@ -80,7 +80,7 @@ public sealed record AdmissionProblem
 
     /// <summary>Every <c>lora_B</c> tensor is zero: merging the adapter is a silent no-op.</summary>
     public static AdmissionProblem InertAdapter(string adapterName, string adapterId) => new(
-        TypeUriPrefix + "inert-adapter",
+        ProblemTypes.InertAdapter,
         "Adapter is inert",
         $"Adapter '{adapterName}' ({adapterId}) has every lora_B tensor exactly zero, so merging it is a " +
         "silent no-op. Rejected as inert, distinct from any hash or base-model failure.",
@@ -89,7 +89,7 @@ public sealed record AdmissionProblem
 
     /// <summary>A configured tenant references an <see cref="AdapterId"/> that was not admitted.</summary>
     public static AdmissionProblem UnknownAdapter(TenantId tenant, AdapterId requested) => new(
-        TypeUriPrefix + "unknown-adapter",
+        ProblemTypes.UnknownAdapter,
         "Tenant references an unknown adapter",
         $"Tenant '{tenant}' references adapter '{requested}', which is not among the admitted adapters. " +
         "Every configured tenant must resolve to an admitted adapter.",

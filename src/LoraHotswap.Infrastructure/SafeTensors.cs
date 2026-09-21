@@ -8,9 +8,9 @@ namespace LoraHotswap.Infrastructure;
 /// <summary>
 /// Minimal safetensors reader.
 ///
-/// Ported verbatim from rung 1's
-/// <c>lora-anatomy-dotnet/src/LoraAnatomy/SafeTensors.cs</c> (the reuse mandate);
-/// only the namespace changed. Reuses the header/offset parsing and dtype
+/// Ported from rung 1's
+/// <c>lora-anatomy-dotnet/src/LoraAnatomy/SafeTensors.cs</c> (the reuse mandate); only
+/// the namespace changed, plus a <see cref="Load(Stream)"/> overload. Reuses the header/offset parsing and dtype
 /// handling unchanged.
 ///
 /// Layout: [8 bytes little-endian u64 = header length][JSON header][raw tensor data]
@@ -23,7 +23,16 @@ public static class SafeTensors
     public static Dictionary<string, Tensor> Load(string path)
     {
         using var stream = File.OpenRead(path);
-        using var reader = new BinaryReader(stream);
+        return Load(stream);
+    }
+
+    /// <summary>
+    /// Load from a seekable stream (added for running-instance verification, which parses
+    /// the same bytes it hashed). The stream is left open.
+    /// </summary>
+    public static Dictionary<string, Tensor> Load(Stream stream)
+    {
+        using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
 
         ulong headerLen = reader.ReadUInt64();
         string headerJson = Encoding.UTF8.GetString(reader.ReadBytes((int)headerLen));
