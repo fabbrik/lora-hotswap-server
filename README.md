@@ -298,5 +298,53 @@ re-checks it. Warning and error logs name the tenant and its adapter. No
 code path returns output without the tenant's adapter reported applied, and
 problem details never carry internal exception text.
 
+#### Identity proof and the three sabotages (Story 2.5)
+
+Asserting that routing works is not the same as showing the suite would notice if it
+broke. `tests/LoraHotswap.Tests/IdentityProofTests.cs` holds one reusable routine,
+`IdentityProof.AssertAsync`, that every honest serving path must pass — and the same
+routine is then run against five deliberately sabotaged runtimes and asserted to
+fail. That is SM-1 in the PRD's success metrics: deliberately breaking routing must
+turn the suite red. There is one place to change when the claim changes, so the honest and sabotage
+paths cannot drift apart.
+
+The world maps two tenants to two **different real fixture adapters** — Alice to
+`fixtures/merge/scaling-4`, Bob to `fixtures/merge/scaling-1` — so the identities
+compared are genuine content hashes, not synthetic ids. The proof runs unchanged
+under both binding strategies, and rests on two independent legs:
+
+1. **Routing** — the response names that tenant's adapter and only it, the applied set
+   the fake runtime *recorded* is exactly that adapter, the generated text derives
+   from it, and neither the response nor the record carries the other tenant's id.
+2. **Artifact verification** (Story 1.7) — the adapter the response named verifies
+   two-sidedly as `match` against its Python PEFT reference.
+
+No merged weights are ever read from a live inference context (AD-5), and nothing is
+asserted about output magnitude or how far an adapter moves activations — the PRD's
+addendum records that a trained adapter moves them only ~1.5%, which is why sabotage
+detection is the metric instead. The proof serves one request at a time; cross-tenant
+isolation under concurrency is Story 2.2's 300-request workload.
+
+Each sabotage is injected at the runtime seam, exactly where a real routing bug would
+sit, and each test names the sabotage it plants so a proof that stops detecting one
+says which:
+
+| Sabotage | What the runtime does | How the proof fails |
+| --- | --- | --- |
+| `always-one-adapter` | Applies Alice's adapter whatever it is asked to apply | Bob's request never yields his adapter; the failure names the tenant and both adapter ids |
+| `no-adapter` | Applies nothing, so it records an empty applied set | The request fails closed with `adapter-not-applied`, and the proof fails on it rather than skipping the tenant |
+| `always-base-model` | Reports the right applied set but generates as if nothing were applied | The text leg fails — the reported set alone never satisfies the proof |
+| `lying-report` | Applies one fixed adapter while reporting the requested one | Production trusts the report, so only the recorded applied set gives it away |
+| `leftover-adapter` | Leaves a stale adapter applied beside the requested one, reporting only the requested one | The recorded applied set is two adapters wide |
+| `drifted-artifact` | Routing is honest, but the served adapter's reference no longer agrees with its weights | Artifact verification returns `mismatch` |
+
+The last three sabotages are the ones production cannot catch by itself: the serving
+path trusts the applied set the runtime reports, so the recorded routing and the
+artifact are what remain. Each leg of the proof is pinned by at least one sabotage —
+neutralize a leg and a sabotage test turns red.
+
+Story 2.5 changes no production behaviour: it is a test-suite deliverable, and no
+existing assertion was weakened to make a sabotage detectable.
+
 See `tools/acquire/acquire.py` for the acquisition tool's own docstring, and
 `GOTCHAS.md` for issues hit along the way.
