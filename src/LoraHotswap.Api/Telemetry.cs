@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using LoraHotswap.Core;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -6,23 +6,21 @@ using OpenTelemetry.Trace;
 namespace LoraHotswap.Api;
 
 /// <summary>
-/// The system's single OpenTelemetry trace source (AD-10) and its wiring. Spans are
+/// The wiring for the system's single OpenTelemetry trace source (AD-10). Spans are
 /// always observable on the console with no collector running, and additionally
 /// exported over OTLP when an endpoint is configured.
+///
+/// The source itself is <see cref="LoraHotswapTelemetry"/>, in Core: the serving pipeline
+/// and the binding strategies emit spans, and Core may not reference this project. Only
+/// the host-configured exporter wiring lives here.
 /// </summary>
-public static class LoraHotswapTelemetry
+public static class LoraHotswapTracing
 {
-    /// <summary>The one ActivitySource name for the whole system (Spine: Tracing convention).</summary>
-    public const string ActivitySourceName = "LoraHotswap";
-
     /// <summary>The configuration section for exporter settings.</summary>
     public const string SectionName = "OpenTelemetry";
 
-    /// <summary>The shared source every span is started from.</summary>
-    public static ActivitySource Source { get; } = new(ActivitySourceName);
-
     /// <summary>
-    /// Register tracing for <see cref="ActivitySourceName"/>.
+    /// Register tracing for <see cref="LoraHotswapTelemetry.ActivitySourceName"/>.
     /// <list type="bullet">
     ///   <item><c>OpenTelemetry:ConsoleExporter</c> (default <see langword="true"/>) -- console export.</item>
     ///   <item><c>OpenTelemetry:OtlpEndpoint</c>, or the standard <c>OTEL_EXPORTER_OTLP_ENDPOINT</c>
@@ -72,7 +70,7 @@ public static class LoraHotswapTelemetry
                 // and the default parent-based sampler would drop every child span -- including
                 // adapter.verification. Sampling every LoraHotswap span regardless of its parent
                 // keeps them, without exporting HTTP server spans that carry no adapter.id.
-                tracing.SetSampler(new AlwaysOnSampler()).AddSource(ActivitySourceName);
+                tracing.SetSampler(new AlwaysOnSampler()).AddSource(LoraHotswapTelemetry.ActivitySourceName);
 
                 if (console)
                 {

@@ -345,6 +345,9 @@ raw `ActivityListener` still saw it. The endpoint tests hid this because their t
 host cleared the logging providers, and with no enabled diagnostics there is no
 parent activity at all.
 
+Since Story 2.7 the dominant case is the five spans a served request emits, not
+just `adapter.verification`.
+
 Resolution: an `AlwaysOnSampler`, so every `LoraHotswap` span is recorded whatever
 its parent. The first fix, `AddAspNetCoreInstrumentation()`, also worked, but it
 exported an HTTP server span per request with no `adapter.id`, breaking Story 1.8's
@@ -378,6 +381,17 @@ with a reference error of exactly 0 (bit-identical to PEFT's fp32 merge).
 and breaks "re-running rewrites byte-identical files". The generator now sorts
 `target_modules` before writing.
 
+### [NOTE] The `LoraHotswap` telemetry vocabulary lives in Core, and the two `Telemetry.cs` files differ
+
+Story 2.7 needed the binding strategies (Core) to emit spans, and Core may not
+reference Api. So `Core/Telemetry.cs` owns `LoraHotswapTelemetry`: the single
+`ActivitySource`, the tag names, the `unidentified` constant (moved off
+`AdmissionStartup`) and the span helpers. `Api/Telemetry.cs` keeps only the
+exporter wiring and was renamed `LoraHotswapTracing` so the two names cannot be
+confused. `AddProblemDetails()` is still registered but no longer shapes serving or
+verification problem bodies, which are written directly; a future
+`CustomizeProblemDetails` would apply to framework problems only.
+
 ### [TRAP] `_us` field names cannot survive the default JSON policy
 
 NFR4 requires `adapter_resolution_us` and friends on the wire, but minimal APIs
@@ -397,3 +411,25 @@ break the "interfaces only" rule. They are declared in `Core` instead, and
 `PortConventionTests` now scans both assemblies. A guard test fails if the scan
 stops finding them.
 
+
+### [HIT] `Results.Problem` overwrites a `traceId` extension with the W3C traceparent
+
+Story 2.7 requires every error body to carry the id of the trace that produced it.
+Passing `extensions: { ["traceId"] = Activity.Current.TraceId }` to `Results.Problem`
+looked right and came back as `00-<traceId>-<spanId>-01`: ASP.NET Core's default
+ProblemDetails writer sets `traceId` to `Activity.Current.Id` unconditionally, after
+the caller's extensions are copied in. Problems are now written with `Results.Json`
+over a `ProblemDetails` whose `Extensions` carry the value, which emits the identical
+shape (`type`, `title`, `status`, `detail`, plus `traceId`) with the trace id a reader
+can actually look up. A test pins both that member list and that the value equals
+the `serve.request` span's trace id, so neither the shape nor the value can silently
+change the wire shape.
+
+### [TRAP] A process-wide `ActivityListener` sees every test class's spans at once
+
+`SpanCapture` listens to the whole `LoraHotswap` source, and serving spans carry
+`adapter.id` just as verification spans do. Once the serving path emitted spans, a
+verification test asserting `Assert.Single(spans.ForAdapterId(id))` could catch
+another class's serving span for the same fixture adapter, in parallel. The filters
+are now keyed on the operation name as well (`SpanCapture.Verifications`), and the
+serving tracing tests give every tenant a unique name and filter on `tenant.id`.

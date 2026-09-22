@@ -93,4 +93,21 @@ public sealed class RequestProblemException : Exception
 
     /// <summary>The problem to render as RFC 9457 problem details.</summary>
     public RequestProblem Problem { get; }
+
+    /// <summary>
+    /// The stage span that already recorded this rejection, if any. An enclosing stage
+    /// checks it so a single rejection is attributed to one stage, not to every stage it
+    /// unwinds through (SM-5: one rejection, one check).
+    /// </summary>
+    public string? RecordedOnStage { get; private set; }
+
+    /// <summary>The trace the rejection was recorded on, so the response can name it even with no ambient activity.</summary>
+    public string? TraceId { get; private set; }
+
+    /// <summary>Record that <paramref name="stage"/> attributed this rejection; the first stage wins.</summary>
+    public void MarkRecordedOn(string stage, string? traceId)
+    {
+        RecordedOnStage ??= stage;
+        TraceId ??= traceId;
+    }
 }

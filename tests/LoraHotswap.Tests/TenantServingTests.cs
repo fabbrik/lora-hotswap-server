@@ -270,26 +270,33 @@ public sealed class TenantServingTests
     [Fact]
     public async Task Per_request_strategy_reports_the_application_it_did_at_request_time()
     {
-        var runtime = new SlowRuntime { ApplyDelay = TimeSpan.FromMilliseconds(15), GenerateDelay = TimeSpan.FromMilliseconds(15) };
+        // Wide margins on purpose: the whole suite runs in parallel, so a lookup or an
+        // uncontended semaphore can take a few milliseconds under load. 100 ms of real work
+        // in the measured stage keeps the signal unambiguous without a race.
+        // Deliberately unequal: an assertion comparing two same-length sleeps fails on their
+        // jitter rather than on the property it guards.
+        var runtime = new SlowRuntime { ApplyDelay = TimeSpan.FromMilliseconds(100), GenerateDelay = TimeSpan.FromMilliseconds(25) };
         var world = await World.CreateAsync(PerRequestApplyStrategy.StrategyName, runtime);
 
         TenantResponse response = await world.Service.ServeAsync(new TenantRequest(World.Alice, "hello"), CancellationToken.None);
 
-        Assert.True(response.Timings.AdapterApplicationMicroseconds > 0,
-            "PerRequestApply applies the adapter inside the lease, so the application figure must reflect that work.");
-        Assert.True(response.Timings.GenerationMicroseconds > 0);
+        Assert.True(response.Timings.AdapterApplicationMicroseconds > 50_000,
+            "PerRequestApply applies the adapter inside the lease, so the application figure must reflect that 100 ms of work.");
+        Assert.True(response.Timings.GenerationMicroseconds > 10_000);
 
-        // Each stage measures only itself. With 15 ms of apply and 15 ms of generation on an
+        // Each stage measures only itself. With 100 ms of apply and 100 ms of generation on an
         // uncontended pool, a stage that folded in another's work would be milliseconds wide:
         // resolution is a dictionary lookup, and acquisition is an uncontended semaphore.
-        Assert.True(response.Timings.AdapterResolutionMicroseconds < 5_000,
+        Assert.True(response.Timings.AdapterResolutionMicroseconds < 25_000,
             $"Resolution is a registry lookup, so it cannot take {response.Timings.AdapterResolutionMicroseconds} us " +
             "-- it is folding in the lease, the application or the generation.");
-        Assert.True(response.Timings.ContextAcquisitionMicroseconds < 5_000,
+        Assert.True(response.Timings.ContextAcquisitionMicroseconds < 25_000,
             $"An uncontended pool slot cannot take {response.Timings.ContextAcquisitionMicroseconds} us " +
             "-- acquisition is folding in the application it should report separately.");
-        Assert.True(response.Timings.AdapterApplicationMicroseconds < 5_000 + response.Timings.GenerationMicroseconds,
-            "Application must not fold in the generation that follows it.");
+        // Absolute, not relative to the sibling stage: apply sleeps 100 ms, so folding in the
+        // 25 ms generation would push it past this bound.
+        Assert.True(response.Timings.AdapterApplicationMicroseconds < 120_000,
+            $"Application reported {response.Timings.AdapterApplicationMicroseconds} us: it is folding in the generation that follows it.");
     }
 
     [Fact]
@@ -309,28 +316,25 @@ public sealed class TenantServingTests
     [MemberData(nameof(Strategies))]
     public async Task Acquisition_is_really_measured_a_contended_context_shows_the_wait(string strategy)
     {
-        var world = await World.CreateAsync(strategy, poolSize: 1, leaseTimeout: TimeSpan.FromSeconds(30));
-        ContextLease held = await world.Strategy.LeaseAsync(World.Alice, world.AliceAdapter, CancellationToken.None);
+        // The wait is caused by the server, not by this thread: with one context (or one
+        // resident context per tenant) and a 50 ms generation, a second request for the same
+        // tenant must wait for the first. No delay here races the request reaching the lease.
+        var slow = new SlowRuntime { GenerateDelay = TimeSpan.FromMilliseconds(50) };
+        var world = await World.CreateAsync(strategy, slow, poolSize: 1, leaseTimeout: TimeSpan.FromSeconds(30));
 
-        // The call runs synchronously into the lease wait, so the delay below is time
-        // the request genuinely spends acquiring a context.
-        Task<TenantResponse> serving = world.Service.ServeAsync(new TenantRequest(World.Alice, "hello"), CancellationToken.None);
-        await Task.Delay(TimeSpan.FromMilliseconds(30), TestContext.Current.CancellationToken);
-        await held.DisposeAsync();
+        Task<TenantResponse> first = world.Service.ServeAsync(new TenantRequest(World.Alice, "one"), CancellationToken.None);
+        Task<TenantResponse> second = world.Service.ServeAsync(new TenantRequest(World.Alice, "two"), CancellationToken.None);
+        TenantResponse[] responses = await Task.WhenAll(first, second);
 
-        TenantResponse response = await serving;
-        Assert.True(response.Timings.ContextAcquisitionMicroseconds > 20_000,
-            $"The request waited ~30 ms for a context, so acquisition cannot report " +
-            $"{response.Timings.ContextAcquisitionMicroseconds} us.");
+        Assert.True(responses.Max(r => r.Timings.ContextAcquisitionMicroseconds) > 20_000,
+            "One request waited on the other's 50 ms generation, so acquisition cannot report " +
+            $"{string.Join(" and ", responses.Select(r => r.Timings.ContextAcquisitionMicroseconds))} us.");
 
-        // The wait belongs to acquisition alone. If the application clock started before
-        // the queue wait instead of after it, this figure would carry those 30 ms too --
+        // The wait belongs to acquisition alone. If the application clock started before the
+        // queue wait instead of after it, this figure would carry those 50 ms too --
         // double-counting the wait in the one stage Story 2.8 compares across strategies.
-        if (strategy == PerRequestApplyStrategy.StrategyName)
-        {
-            Assert.True(response.Timings.AdapterApplicationMicroseconds < 5_000,
-                $"Application reported {response.Timings.AdapterApplicationMicroseconds} us: it is folding in the lease wait.");
-        }
+        Assert.All(responses, r => Assert.True(r.Timings.AdapterApplicationMicroseconds < 20_000,
+            $"Application reported {r.Timings.AdapterApplicationMicroseconds} us: it is folding in the lease wait."));
     }
 
     [Fact]

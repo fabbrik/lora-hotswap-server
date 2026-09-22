@@ -57,9 +57,6 @@ public static class AdmissionStartup
     /// <summary>The span name for one adapter's admission decision.</summary>
     public const string SpanName = "adapter.admission";
 
-    /// <summary>The <c>adapter.id</c> value when no identity could be derived (no source bytes).</summary>
-    public const string UnidentifiedAdapter = "unidentified";
-
     /// <summary>Run admission over the given directories and tenant map.</summary>
     public static async Task<AdmissionStartupOutcome> RunAsync(
         IReadOnlyList<string> adapterDirectories,
@@ -95,7 +92,7 @@ public static class AdmissionStartup
             {
                 // A read that throws (unreadable file, malformed JSON) still closes its
                 // span with a result and an error status before startup fails.
-                activity?.SetTag("adapter.id", UnidentifiedAdapter);
+                activity?.SetTag("adapter.id", LoraHotswapTelemetry.UnidentifiedAdapter);
                 activity?.SetTag("admission.result", "error");
                 activity?.SetTag("admission.reason", ex.GetType().Name);
                 // The type name only: exception messages and stack traces from the file
@@ -123,7 +120,7 @@ public static class AdmissionStartup
                 // a rejected adapter whenever those bytes exist.
                 activity?.SetTag("adapter.id", artifacts.RecomputedSourceSha256 is { } sha
                     ? "sha256:" + sha
-                    : UnidentifiedAdapter);
+                    : LoraHotswapTelemetry.UnidentifiedAdapter);
                 activity?.SetTag("admission.result", "rejected");
                 activity?.SetTag("admission.reason", problem.Type);
                 activity?.SetStatus(ActivityStatusCode.Error, problem.Title);

@@ -257,7 +257,7 @@ it). All four acquired adapters verify as `match` with a reference error of 0.
 
 No weights are read from a live inference context (AD-5).
 
-#### Tenant serving (Stories 2.1–2.4, 2.6)
+#### Tenant serving (Stories 2.1–2.4, 2.6, 2.7)
 
 ```sh
 curl -X POST http://localhost:5000/v1/generate -H 'content-type: application/json' \
@@ -329,6 +329,100 @@ and "faster than a microsecond" for the other.
 A rejected request is unchanged by this story: an RFC 9457 problem carries no
 `timings`.
 
+##### Request tracing (Story 2.7)
+
+The serving pipeline is also a trace, on the same `LoraHotswap` source admission uses.
+One span per request, one span per stage, so a rejected or slow request can be
+explained after the fact:
+
+```
+serve.request
+├── serve.resolve     tenant -> admitted adapter
+├── serve.lease       exclusive context lease
+│   └── serve.apply   adapter application (emitted by the binding strategy, where the work is)
+└── serve.generate    generation, and the applied-set check that follows it
+```
+
+`serve.apply` hangs off `serve.lease` because that is where the application
+happens — inside the lease, by the lease holder. It is one trace either way: no
+stage is outside the request span.
+
+Every serving span carries three tags:
+
+| Tag | Value |
+| --- | --- |
+| `tenant.id` | The tenant named in the request |
+| `adapter.id` | The adapter identity, or `unidentified` before the tenant is resolved — never a path |
+| `binding.strategy` | `PerRequestApply` or `PerTenantResident` |
+
+`serve.apply` additionally carries `adapter.applied_at`: `request` under
+`PerRequestApply`, `startup` under `PerTenantResident`. The resident strategy still
+emits the span although it does no work at request time — a missing span would read
+as a stage that was skipped or lost, and `0` is the honest answer (the same reason
+`adapter_application_us` is `0` rather than absent).
+
+**The stage that rejects a request is the span that records it**, with an error
+status and a `problem.type` tag holding the RFC 9457 `type`. The request span
+records the same problem type, so the root of the trace says both that the request
+failed and which stage failed it:
+
+| Rejection | Stage span that records it |
+| --- | --- |
+| `unknown-tenant`, `base-model-mismatch` | `serve.resolve` — no later stage starts |
+| `lease-unavailable` | `serve.lease` — generation never starts |
+| `adapter-not-applied` on application | `serve.apply` — the enclosing `serve.lease` does not re-record it |
+| `adapter-not-applied` with no resident context for the tenant | `serve.lease` — `PerTenantResident` has no application stage to reach |
+| `adapter-not-applied` on an empty or foreign applied set | `serve.generate` |
+| `generation-failed` | `serve.generate` |
+| An unexpected fault (`internal-error`) | The stage it was raised in, by exception type name only |
+
+Exactly one stage span records a given rejection: a stage that merely unwinds an
+inner stage's failure records nothing of its own, so the trace never names two
+rejecting stages for one failed check (SM-5).
+
+A cancelled request is neither: every span still open closes with an error status
+described as `cancelled` and no `problem.type`, so an aborted request is never
+mistaken for a served one.
+
+A span never carries a filesystem path or internal exception text, exactly as a
+problem body never does.
+
+**Every error response body carries `traceId`**, the id of the trace that produced
+it, added at the one place problems are built so no rejection path can forget it.
+A typed rejection carries the id of the `serve.request` span that recorded it, so
+the value is that trace even when the host creates no ambient request activity; a
+rejection raised before any stage runs falls back to the request identifier, which
+is non-empty but is not a trace id:
+
+```json
+{
+  "type": "https://lora-hotswap/problems/unknown-tenant",
+  "title": "Unknown tenant",
+  "status": 404,
+  "detail": "Tenant 'mallory' is not configured; ...",
+  "traceId": "0466e77cb84076a06368415e6c8b96a2"
+}
+```
+
+Successful responses are unchanged: they carry the `timings`, not a `traceId`.
+
+Serving logs are structured and correlated to the trace: a fail-closed rejection
+logs at warning with `TenantId`, `AdapterId` (`unidentified` when the tenant does
+not resolve), `ProblemType` and `TraceId`; an unexpected fault logs at error with
+`TenantId`, `AdapterId` and `TraceId`. Verification logs carry `AdapterId`,
+`ProblemType` and `TraceId` — there is no tenant on that route.
+
+**Tracing never substitutes for the in-band timings.** Read the four `_us` figures,
+not span durations: `serve.lease` encloses `serve.apply`, so its duration covers
+acquisition *and* application, while `context_acquisition_us` excludes application
+by design. The stages a span reports are the stages the pipeline measures, but the
+figures come from the pipeline's own `Stopwatch` reads and are never read back from
+a span — Story 2.8's table has no
+second measurement path it could prefer. Every span starts outside the stopwatch
+window it wraps, so starting a span never lands inside a stage's figure. With no
+listener registered, every `StartActivity` returns `null`, and serving and its
+timings behave identically.
+
 The binding strategy is configured under `Serving`:
 
 - **`PerRequestApply`** (default): `ContextPoolSize` generic contexts (default 4).
@@ -351,6 +445,11 @@ prefix:
 | `generation-failed` | 500 | |
 | `base-model-mismatch` | 500 | |
 | `internal-error` | 500 | An unexpected fault; the detail is generic |
+
+Serving now emits five spans per request. The console exporter is on by default, so
+set `OpenTelemetry:ConsoleExporter=false` when running Story 2.8's comparison —
+synchronous console I/O in the request path would otherwise be measured as part of
+the strategies it compares.
 
 `inert-adapter` is rejected only at admission, and fails startup: it never reaches
 a request. `base-model-mismatch` is also rejected at admission; the serve path

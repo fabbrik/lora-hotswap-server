@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LoraHotswap.Core;
+using Microsoft.AspNetCore.Mvc;
 
 namespace LoraHotswap.Api;
 
@@ -138,7 +139,7 @@ public static class ServingEndpoints
             }
 
             var tenant = new TenantId(request.Tenant);
-            string adapterForLogs = registry.ResolveTenant(tenant)?.Id.Value ?? "none";
+            string adapterForLogs = registry.ResolveTenant(tenant)?.Id.Value ?? LoraHotswapTelemetry.UnidentifiedAdapter;
             try
             {
                 TenantResponse response = await serving.ServeAsync(new TenantRequest(tenant, request.Prompt), token);
@@ -156,15 +157,18 @@ public static class ServingEndpoints
             }
             catch (RequestProblemException ex)
             {
+                // Structured, naming the tenant and its adapter, and carrying the trace id the
+                // caller was handed, so a log line and a trace are two views of one request.
                 logger.LogWarning(ex.InnerException,
-                    "Request for tenant {TenantId} with adapter {AdapterId} failed closed: {ProblemType}",
-                    tenant.Value, adapterForLogs, ex.Problem.Type);
-                return Problem(http, ex.Problem);
+                    "Request for tenant {TenantId} with adapter {AdapterId} failed closed: {ProblemType} (trace {TraceId})",
+                    tenant.Value, adapterForLogs, ex.Problem.Type, TraceId(http));
+                return Problem(http, ex.Problem, ex);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
             {
-                logger.LogError(ex, "Request for tenant {TenantId} with adapter {AdapterId} failed unexpectedly",
-                    tenant.Value, adapterForLogs);
+                logger.LogError(ex,
+                    "Request for tenant {TenantId} with adapter {AdapterId} failed unexpectedly (trace {TraceId})",
+                    tenant.Value, adapterForLogs, TraceId(http));
                 return Problem(http, RequestProblem.InternalError());
             }
         });
@@ -176,7 +180,7 @@ public static class ServingEndpoints
             using Activity? activity = LoraHotswapTelemetry.Source.StartActivity(VerificationSpanName, ActivityKind.Internal);
             if (!IsContentIdentity(adapterId))
             {
-                activity?.SetTag("adapter.id", AdmissionStartup.UnidentifiedAdapter);
+                activity?.SetTag("adapter.id", LoraHotswapTelemetry.UnidentifiedAdapter);
                 activity?.SetTag("verification.outcome", "error");
                 activity?.SetTag("verification.reason", ProblemTypes.InvalidRequest);
                 activity?.SetStatus(ActivityStatusCode.Error, "Invalid request");
@@ -214,15 +218,17 @@ public static class ServingEndpoints
                 activity?.SetTag("verification.reason", ex.Problem.Type);
                 activity?.SetStatus(ActivityStatusCode.Error, ex.Problem.Title);
                 logger.LogWarning(ex.InnerException,
-                    "Verification of adapter {AdapterId} failed: {ProblemType}", id.Value, ex.Problem.Type);
-                return Problem(http, ex.Problem);
+                    "Verification of adapter {AdapterId} failed: {ProblemType} (trace {TraceId})",
+                    id.Value, ex.Problem.Type, TraceId(http));
+                return Problem(http, ex.Problem, ex);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
             {
                 activity?.SetTag("verification.outcome", "error");
                 activity?.SetTag("verification.reason", ProblemTypes.InternalError);
                 activity?.SetStatus(ActivityStatusCode.Error, ex.GetType().Name);
-                logger.LogError(ex, "Verification of adapter {AdapterId} failed unexpectedly", id.Value);
+                logger.LogError(ex, "Verification of adapter {AdapterId} failed unexpectedly (trace {TraceId})",
+                    id.Value, TraceId(http));
                 return Problem(http, RequestProblem.InternalError());
             }
         });
@@ -238,7 +244,14 @@ public static class ServingEndpoints
 
     private static readonly System.Buffers.SearchValues<char> LowerHex = System.Buffers.SearchValues.Create("0123456789abcdef");
 
-    private static IResult Problem(HttpContext http, RequestProblem problem)
+    /// <summary>The problem-body member carrying the trace id of the request that failed.</summary>
+    public const string TraceIdMember = "traceId";
+
+    /// <summary>
+    /// The single place a request-time problem is built, which is why <see cref="TraceIdMember"/>
+    /// is added here: no rejection path can forget it (Story 2.7).
+    /// </summary>
+    private static IResult Problem(HttpContext http, RequestProblem problem, RequestProblemException? rejection = null)
     {
         int status = StatusCodesByType.GetValueOrDefault(problem.Type, StatusCodes.Status500InternalServerError);
         if (problem.Type == ProblemTypes.LeaseUnavailable)
@@ -246,6 +259,43 @@ public static class ServingEndpoints
             http.Response.Headers.RetryAfter = LeaseRetryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        return Results.Problem(detail: problem.Detail, statusCode: status, title: problem.Title, type: problem.Type);
+        var body = new ProblemDetails
+        {
+            Type = problem.Type,
+            Title = problem.Title,
+            Detail = problem.Detail,
+            Status = status,
+        };
+        body.Extensions[TraceIdMember] = TraceId(http, rejection);
+
+        // GOTCHA: written directly rather than through Results.Problem. The default
+        // ProblemDetails writer overwrites the traceId extension with Activity.Current.Id --
+        // the W3C traceparent of the ambient request activity, not the trace id a reader
+        // needs to look the trace up. The shape is identical: ProblemDetails serializes its
+        // own member names and folds Extensions in as JSON extension data.
+        return Results.Json(body, statusCode: status, contentType: "application/problem+json");
+    }
+
+    /// <summary>
+    /// The id of the trace this request belongs to, so an error response is a handle back to
+    /// its own trace (SM-5). The serving spans run under the ambient request activity, so its
+    /// trace id is the trace id of <c>serve.request</c>. With tracing entirely absent there is
+    /// no trace to name, and the connection's request identifier is the honest fallback --
+    /// never an empty or missing field.
+    /// </summary>
+    private static string TraceId(HttpContext http, RequestProblemException? rejection = null)
+    {
+        // The rejection's own trace wins: the pipeline recorded it on serve.request, and with
+        // no ambient request activity that trace is otherwise unreachable from here.
+        if (rejection?.TraceId is { Length: > 0 } recorded)
+        {
+            return recorded;
+        }
+
+        // A non-W3C ambient activity has an all-zero TraceId, which looks like a trace id and
+        // matches nothing, so fall back rather than emit it.
+        return Activity.Current is { IdFormat: ActivityIdFormat.W3C } current
+            ? current.TraceId.ToString()
+            : http.TraceIdentifier;
     }
 }

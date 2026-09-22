@@ -98,25 +98,39 @@ public sealed class ServingEndpointTests
     public async Task Acquisition_time_lands_in_the_acquisition_field_on_the_wire()
     {
         // The remaining two wire fields: with every stage small, resolution and acquisition
-        // could be transposed at the mapping and no test would see it. Contention makes
-        // acquisition the large one.
-        await using var host = await Host.StartAsync(PerRequestApplyStrategy.StrategyName, poolSize: 1,
+        // could be transposed at the mapping and no test would see it. The wait is caused by
+        // the server, not by this thread -- two requests against a pool of one, where the
+        // first spends 50 ms generating. Whichever runs second must wait for it, so there is
+        // no race between a test delay and the request reaching the lease.
+        var slow = new TenantServingTests.SlowRuntime { GenerateDelay = TimeSpan.FromMilliseconds(50) };
+        await using var host = await Host.StartAsync(PerRequestApplyStrategy.StrategyName, slow, poolSize: 1,
             leaseTimeout: TimeSpan.FromSeconds(30));
-        ContextLease held = await host.World.Strategy.LeaseAsync(TenantServingTests.World.Alice,
-            host.World.AliceAdapter, CancellationToken.None);
 
-        Task<HttpResponseMessage> serving = host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "hello" }, Ct);
-        await Task.Delay(TimeSpan.FromMilliseconds(30), Ct);
-        await held.DisposeAsync();
+        Task<HttpResponseMessage> first = host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "one" }, Ct);
+        Task<HttpResponseMessage> second = host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "bob", prompt = "two" }, Ct);
+        HttpResponseMessage[] responses = await Task.WhenAll(first, second);
 
-        using HttpResponseMessage response = await serving;
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        JsonElement timings = (await response.Content.ReadFromJsonAsync<JsonElement>(Ct)).GetProperty("timings");
-        Assert.True(timings.GetProperty("context_acquisition_us").GetInt64() > 20_000,
-            "The request waited ~30 ms for the single context, so context_acquisition_us must carry it.");
-        Assert.All(new[] { "adapter_resolution_us", "adapter_application_us", "generation_us" },
-            name => Assert.True(timings.GetProperty(name).GetInt64() < 10_000,
-                $"{name} carries the lease wait, so the wire fields are transposed."));
+        long[] acquisitions = new long[responses.Length];
+        for (int i = 0; i < responses.Length; i++)
+        {
+            Assert.Equal(HttpStatusCode.OK, responses[i].StatusCode);
+            JsonElement timings = (await responses[i].Content.ReadFromJsonAsync<JsonElement>(Ct)).GetProperty("timings");
+            acquisitions[i] = timings.GetProperty("context_acquisition_us").GetInt64();
+
+            // Neither resolution nor application may carry the queue wait, whichever request
+            // this is: a transposed mapping would put the wait under one of these names.
+            Assert.True(timings.GetProperty("adapter_resolution_us").GetInt64() < 20_000,
+                "adapter_resolution_us carries the lease wait, so the wire fields are transposed.");
+            // generation_us is deliberately unbounded here: this runtime generates for 50 ms
+            // on purpose. A generation field that carried the lease wait is caught by
+            // Each_stage_lands_in_its_own_wire_field, where generation is the only slow stage.
+            Assert.True(timings.GetProperty("adapter_application_us").GetInt64() < 20_000,
+                "adapter_application_us carries the lease wait, so the wire fields are transposed.");
+            responses[i].Dispose();
+        }
+
+        Assert.True(acquisitions.Max() > 20_000,
+            $"One request waited on the other's 50 ms generation, so context_acquisition_us must carry it; saw {string.Join(" and ", acquisitions)} us.");
     }
 
     [Fact]
@@ -125,34 +139,34 @@ public sealed class ServingEndpointTests
         // The Core-to-wire copy is positional: with every stage near zero, transposing two
         // fields would serialize happily. A runtime that spends real time in exactly one
         // stage pins each name to the stage it claims to measure.
-        var slowGeneration = new TenantServingTests.SlowRuntime { GenerateDelay = TimeSpan.FromMilliseconds(25) };
+        var slowGeneration = new TenantServingTests.SlowRuntime { GenerateDelay = TimeSpan.FromMilliseconds(100) };
         await using var host = await Host.StartAsync(PerRequestApplyStrategy.StrategyName, slowGeneration);
 
         using HttpResponseMessage response = await host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "hello" }, Ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         JsonElement timings = (await response.Content.ReadFromJsonAsync<JsonElement>(Ct)).GetProperty("timings");
-        Assert.True(timings.GetProperty("generation_us").GetInt64() > 10_000,
-            "The runtime spent 25 ms generating, so generation_us must carry it.");
+        Assert.True(timings.GetProperty("generation_us").GetInt64() > 50_000,
+            "The runtime spent 100 ms generating, so generation_us must carry it.");
         Assert.All(new[] { "adapter_resolution_us", "context_acquisition_us", "adapter_application_us" },
-            name => Assert.True(timings.GetProperty(name).GetInt64() < 10_000,
+            name => Assert.True(timings.GetProperty(name).GetInt64() < 25_000,
                 $"{name} carries the generation time, so the wire fields are transposed."));
     }
 
     [Fact]
     public async Task Application_time_lands_in_the_application_field_on_the_wire()
     {
-        var slowApply = new TenantServingTests.SlowRuntime { ApplyDelay = TimeSpan.FromMilliseconds(25) };
+        var slowApply = new TenantServingTests.SlowRuntime { ApplyDelay = TimeSpan.FromMilliseconds(100) };
         await using var host = await Host.StartAsync(PerRequestApplyStrategy.StrategyName, slowApply);
 
         using HttpResponseMessage response = await host.Client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "hello" }, Ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         JsonElement timings = (await response.Content.ReadFromJsonAsync<JsonElement>(Ct)).GetProperty("timings");
-        Assert.True(timings.GetProperty("adapter_application_us").GetInt64() > 10_000,
-            "The runtime spent 25 ms applying, so adapter_application_us must carry it.");
+        Assert.True(timings.GetProperty("adapter_application_us").GetInt64() > 50_000,
+            "The runtime spent 100 ms applying, so adapter_application_us must carry it.");
         Assert.All(new[] { "adapter_resolution_us", "context_acquisition_us", "generation_us" },
-            name => Assert.True(timings.GetProperty(name).GetInt64() < 10_000,
+            name => Assert.True(timings.GetProperty(name).GetInt64() < 25_000,
                 $"{name} carries the application time, so the wire fields are transposed."));
     }
 
@@ -311,7 +325,7 @@ public sealed class ServingEndpointTests
         Assert.Equal(adapter.Id.Value, body.GetProperty("adapterId").GetString());
         Assert.Equal(4, body.GetProperty("modules").GetArrayLength());
 
-        Activity span = Assert.Single(spans.ForAdapterId(adapter.Id.Value), s => s.OperationName == ServingEndpoints.VerificationSpanName);
+        Activity span = Assert.Single(spans.Verifications(adapter.Id.Value));
         Assert.Equal("match", span.GetTagItem("verification.outcome"));
     }
 
@@ -337,8 +351,8 @@ public sealed class ServingEndpointTests
 
         Assert.Equal("mismatch", mismatch.GetProperty("outcome").GetString());
         Assert.Equal("inert", noOp.GetProperty("outcome").GetString());
-        Assert.Equal("mismatch", Assert.Single(spans.ForAdapterId(mismatched.Id.Value)).GetTagItem("verification.outcome"));
-        Assert.Equal("inert", Assert.Single(spans.ForAdapterId(inert.Id.Value)).GetTagItem("verification.outcome"));
+        Assert.Equal("mismatch", Assert.Single(spans.Verifications(mismatched.Id.Value)).GetTagItem("verification.outcome"));
+        Assert.Equal("inert", Assert.Single(spans.Verifications(inert.Id.Value)).GetTagItem("verification.outcome"));
     }
 
     [Fact]
@@ -351,7 +365,7 @@ public sealed class ServingEndpointTests
         using HttpResponseMessage response = await host.Client.PostAsync($"/v1/adapters/{unknown}/verify", null, Ct);
 
         await AssertProblem(response, HttpStatusCode.NotFound, ProblemTypes.UnknownAdapter);
-        Activity span = Assert.Single(spans.ForAdapterId(unknown));
+        Activity span = Assert.Single(spans.Verifications(unknown));
         Assert.Equal("error", span.GetTagItem("verification.outcome"));
         Assert.Equal(ProblemTypes.UnknownAdapter, span.GetTagItem("verification.reason"));
     }
@@ -369,8 +383,7 @@ public sealed class ServingEndpointTests
         using HttpResponseMessage response = await host.Client.PostAsync($"/v1/adapters/{adapterId}/verify", null, Ct);
 
         await AssertProblem(response, HttpStatusCode.BadRequest, ProblemTypes.InvalidRequest);
-        Activity span = Assert.Single(spans.ForAdapterId(AdmissionStartup.UnidentifiedAdapter),
-            s => s.OperationName == ServingEndpoints.VerificationSpanName);
+        Activity span = Assert.Single(spans.Verifications(LoraHotswapTelemetry.UnidentifiedAdapter));
         Assert.Equal("error", span.GetTagItem("verification.outcome"));
         Assert.Equal(ProblemTypes.InvalidRequest, span.GetTagItem("verification.reason"));
     }
@@ -403,7 +416,7 @@ public sealed class ServingEndpointTests
         JsonElement problem = await AssertProblem(response, HttpStatusCode.InternalServerError, ProblemTypes.InternalError);
         Assert.DoesNotContain(dir.Path, problem.GetRawText());
         Assert.Equal("The request failed unexpectedly. No output was returned.", problem.GetProperty("detail").GetString());
-        Activity span = Assert.Single(spans.ForAdapterId(admitted.Id.Value));
+        Activity span = Assert.Single(spans.Verifications(admitted.Id.Value));
         Assert.Equal("error", span.GetTagItem("verification.outcome"));
         Assert.Equal(ProblemTypes.InternalError, span.GetTagItem("verification.reason"));
     }
@@ -431,6 +444,12 @@ public sealed class ServingEndpointTests
         JsonElement problem = await response.Content.ReadFromJsonAsync<JsonElement>(Ct);
         Assert.Equal(type, problem.GetProperty("type").GetString());
         Assert.Equal((int)status, problem.GetProperty("status").GetInt32());
+
+        // This host clears its logging providers, so ASP.NET Core creates no ambient activity:
+        // every problem asserted here runs the no-ambient-trace path, which must still name a
+        // trace rather than emitting an empty member.
+        string traceId = problem.GetProperty(ServingEndpoints.TraceIdMember).GetString() ?? "";
+        Assert.False(string.IsNullOrWhiteSpace(traceId), "The problem body carries no traceId.");
         return problem;
     }
 

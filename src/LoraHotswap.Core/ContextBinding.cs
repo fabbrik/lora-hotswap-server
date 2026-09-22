@@ -89,6 +89,22 @@ public interface IContextBindingStrategy
 /// <summary>Resolves a configured strategy name to one of the two implementations.</summary>
 public static class ContextBindingStrategies
 {
+    /// <summary>
+    /// The span covering the adapter-application stage (Story 2.7). Both strategies emit it,
+    /// including the resident one, whose span records that no work happened at request time
+    /// rather than leaving a hole where a stage should be.
+    /// </summary>
+    public const string ApplySpanName = "serve.apply";
+
+    /// <summary>When the adapter was applied: <c>request</c> or <c>startup</c>.</summary>
+    public const string AppliedAtTag = "adapter.applied_at";
+
+    /// <summary><see cref="AppliedAtTag"/> for an adapter applied inside the lease.</summary>
+    public const string AppliedAtRequest = "request";
+
+    /// <summary><see cref="AppliedAtTag"/> for an adapter already applied when the request arrived.</summary>
+    public const string AppliedAtStartup = "startup";
+
     /// <summary>The two valid strategy names, in declaration order.</summary>
     public static IReadOnlyList<string> Names { get; } =
         [PerRequestApplyStrategy.StrategyName, PerTenantResidentStrategy.StrategyName];
@@ -171,27 +187,45 @@ public sealed class PerRequestApplyStrategy : IContextBindingStrategy
             _slots.Release();
         }
 
-        // Application is timed separately from acquisition: this strategy exists to make
-        // exactly that cost visible, so it may never be folded into the wait.
-        long applicationStarted = Stopwatch.GetTimestamp();
-        try
+        // The application span opens before the stopwatch starts, so starting it cannot land
+        // inside the figure this strategy exists to make visible.
+        long applicationMicroseconds;
+        using (Activity? applySpan = LoraHotswapTelemetry.StartServingSpan(
+            ContextBindingStrategies.ApplySpanName, tenant, adapter.Id.Value, Name))
         {
-            await _runtime.ApplyAdaptersAsync(contextId, new HashSet<AdapterId> { adapter.Id }, cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            Release();
-            throw;
-        }
-        catch (Exception ex)
-        {
-            Release();
-            throw new RequestProblemException(
-                RequestProblem.AdapterNotApplied(tenant, adapter.Id, "the runtime failed to apply it on lease"), ex);
+            applySpan?.SetTag(ContextBindingStrategies.AppliedAtTag, ContextBindingStrategies.AppliedAtRequest);
+
+            // Application is timed separately from acquisition: this strategy exists to make
+            // exactly that cost visible, so it may never be folded into the wait.
+            long applicationStarted = Stopwatch.GetTimestamp();
+            try
+            {
+                await _runtime.ApplyAdaptersAsync(contextId, new HashSet<AdapterId> { adapter.Id }, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Release();
+                applySpan?.SetStatus(ActivityStatusCode.Error, TenantServingService.CancelledStatus);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Release();
+                RequestProblem problem = RequestProblem.AdapterNotApplied(
+                    tenant, adapter.Id, "the runtime failed to apply it on lease");
+                LoraHotswapTelemetry.RecordRejection(applySpan, problem.Type, problem.Title);
+
+                // This stage owns the rejection: the enclosing lease span must not re-record it,
+                // or the trace would name two rejecting stages for one failed check.
+                var failure = new RequestProblemException(problem, ex);
+                failure.MarkRecordedOn(ContextBindingStrategies.ApplySpanName, applySpan?.TraceId.ToString());
+                throw failure;
+            }
+
+            applicationMicroseconds = RequestTimings.MicrosecondsSince(applicationStarted);
         }
 
-        return new ContextLease(contextId, Release, acquisitionMicroseconds,
-            RequestTimings.MicrosecondsSince(applicationStarted));
+        return new ContextLease(contextId, Release, acquisitionMicroseconds, applicationMicroseconds);
     }
 }
 
@@ -274,10 +308,22 @@ public sealed class PerTenantResidentStrategy : IContextBindingStrategy
             throw new RequestProblemException(RequestProblem.LeaseUnavailable(tenant, Name, _leaseTimeout));
         }
 
+        // Acquisition is read before the application span opens, so the span's own cost
+        // cannot leak into the one stage this strategy does perform at request time.
+        long acquisitionMicroseconds = RequestTimings.MicrosecondsSince(acquisitionStarted);
+
+        // The application stage still gets a span. It records that the adapter was applied at
+        // startup and that nothing happened here, which is the honest answer -- a missing span
+        // would read as a stage that was skipped or lost.
+        using (Activity? applySpan = LoraHotswapTelemetry.StartServingSpan(
+            ContextBindingStrategies.ApplySpanName, tenant, adapter.Id.Value, Name))
+        {
+            applySpan?.SetTag(ContextBindingStrategies.AppliedAtTag, ContextBindingStrategies.AppliedAtStartup);
+        }
+
         // Application is 0, and honestly so: this strategy applied the adapter at startup,
         // so no application work happens at request time. Acquisition is still measured.
-        return new ContextLease(resident.ContextId, () => resident.Gate.Release(),
-            RequestTimings.MicrosecondsSince(acquisitionStarted), 0);
+        return new ContextLease(resident.ContextId, () => resident.Gate.Release(), acquisitionMicroseconds, 0);
     }
 
     private sealed record Resident(string ContextId, AdapterId AdapterId)

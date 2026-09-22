@@ -78,7 +78,7 @@ public sealed class AdmissionTracingTests
             new Reader(_ => Valid(name) with { Manifest = null, RecomputedSourceSha256 = null }), CancellationToken.None);
 
         Activity span = Assert.Single(capture.For(name));
-        Assert.Equal(AdmissionStartup.UnidentifiedAdapter, span.GetTagItem("adapter.id"));
+        Assert.Equal(LoraHotswapTelemetry.UnidentifiedAdapter, span.GetTagItem("adapter.id"));
         Assert.DoesNotContain(span.Tags, t => t.Value?.Contains("some") == true);
     }
 
@@ -107,7 +107,7 @@ public sealed class AdmissionTracingTests
 
         Activity span = Assert.Single(capture.For(name));
         Assert.Equal("error", span.GetTagItem("admission.result"));
-        Assert.Equal(AdmissionStartup.UnidentifiedAdapter, span.GetTagItem("adapter.id"));
+        Assert.Equal(LoraHotswapTelemetry.UnidentifiedAdapter, span.GetTagItem("adapter.id"));
         Assert.Equal(ActivityStatusCode.Error, span.Status);
     }
 
@@ -169,7 +169,7 @@ public sealed class AdmissionTracingTests
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { [key] = value }).Build();
 
         var error = Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddLoraHotswapTracing(configuration));
-        Assert.StartsWith(LoraHotswapTelemetry.SectionName + ":", error.Message);
+        Assert.StartsWith(LoraHotswapTracing.SectionName + ":", error.Message);
     }
 
     private static async Task ExportAndAwaitAsync(FakeOtlpCollector collector, string name, Dictionary<string, string?> settings)
@@ -397,9 +397,23 @@ internal sealed class SpanCapture : IDisposable
     public IReadOnlyList<Activity> For(string adapterName) =>
         _spans.Where(s => Equals(s.GetTagItem("adapter.name"), adapterName)).ToList();
 
-    /// <summary>Spans whose <c>adapter.id</c> is <paramref name="adapterId"/>.</summary>
-    public IReadOnlyList<Activity> ForAdapterId(string adapterId) =>
-        _spans.Where(s => Equals(s.GetTagItem("adapter.id"), adapterId)).ToList();
+    /// <summary>
+    /// Verification spans (Story 1.9) for <paramref name="adapterId"/>. The operation name is
+    /// part of the filter because serving spans carry <c>adapter.id</c> too, and this listener
+    /// is process-wide: another test class serving the same fixture adapter in parallel would
+    /// otherwise land in the result.
+    /// </summary>
+    public IReadOnlyList<Activity> Verifications(string adapterId) =>
+        _spans.Where(s => s.OperationName == ServingEndpoints.VerificationSpanName
+                          && Equals(s.GetTagItem(LoraHotswapTelemetry.AdapterTag), adapterId)).ToList();
+
+    /// <summary>
+    /// Serving spans (Story 2.7) for <paramref name="tenantId"/>, newest last. Tests give every
+    /// tenant a unique name so this filter isolates one test's request from the process-wide
+    /// listener's view.
+    /// </summary>
+    public IReadOnlyList<Activity> ForTenant(string tenantId) =>
+        _spans.Where(s => Equals(s.GetTagItem(LoraHotswapTelemetry.TenantTag), tenantId)).ToList();
 
     public void Dispose() => _listener.Dispose();
 }
