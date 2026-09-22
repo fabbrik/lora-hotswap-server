@@ -102,6 +102,9 @@ non-zero. To rebuild that one, delete its `adapter.gguf` and
 dotnet build && dotnet test
 ```
 
+The binding-strategy comparison is a tool rather than a test, so it is not part of
+that run — see [Comparing the binding strategies](#comparing-the-binding-strategies-story-28).
+
 #### Adapter content validation (Story 1.5)
 
 `LoraHotswap.Core` now holds the first domain code: `AdapterConfig` parses an
@@ -290,9 +293,10 @@ applied to each context and returns placeholder text.
 **The response body is the authoritative location for the timings.** They are
 never headers-only and no header is their source of truth, so the binding-strategy
 tradeoff is readable with nothing but `curl` — no collector, no exporter, no
-second measurement path. Story 2.8's comparison table is read from exactly these
-numbers; tracing (Story 2.7) reports the same stages but never substitutes for
-them.
+second measurement path. Story 2.8's comparison table
+([`docs/strategy-comparison.md`](docs/strategy-comparison.md)) is read from exactly
+these numbers; tracing (Story 2.7) reports the same stages but never substitutes
+for them.
 
 Every successful response carries all four fields — never omitted, never sampled,
 never zero-suppressed. Values are non-negative **integer microseconds** (NFR4 in the PRD: integer
@@ -504,6 +508,60 @@ neutralize a leg and a sabotage test turns red.
 
 Story 2.5 changes no production behaviour: it is a test-suite deliverable, and no
 existing assertion was weakened to make a sabotage detectable.
+
+#### Comparing the binding strategies (Story 2.8)
+
+The binding strategy is the project's measured variable, so Epic 2's headline
+deliverable is one table saying what each strategy costs — judgeable without
+running anything.
+
+**The published table is [`docs/strategy-comparison.md`](docs/strategy-comparison.md)**,
+with the hardware, OS, runtime and build that produced it recorded beside it
+(NFR3), and Phase A's deterministic fake named there so no figure reads as the
+cost of real inference. It is generated, never hand-written. Regenerate it with:
+
+```bash
+dotnet run -c Release --project tools/compare
+
+# Flags belong after the CLI's own `--` separator, or `dotnet run` eats them:
+dotnet run -c Release --project tools/compare -- --requests 500 --concurrency 8
+dotnet run -c Release --project tools/compare -- --help
+```
+
+Re-running overwrites that one file and changes nothing else.
+
+`tools/compare` runs one identical workload — same tenants, same prompts, same
+count, same concurrency, same context budget — against each strategy in turn, in
+one process, and reads **every** figure from the `timings` object of a served
+response. Specifically:
+
+- **No second measurement path.** The tool starts no clock: it composes the real
+  host in-process (no socket, exactly as `HostCompositionTests` does), posts to
+  `/v1/generate`, and parses the response body. A figure a response did not
+  report is not a figure the table can carry, and
+  `StrategyComparisonTests.The_tool_reads_no_clock_of_its_own` holds the tool's
+  sources to that.
+- **The arm is named by the server.** A sample is only attributed to a strategy
+  the response's own `bindingStrategy` says was active.
+- **A distribution, not a sample.** min / median / p95 / max per stage, with the
+  percentiles nearest-rank and never interpolated, so every cell is a value some
+  response actually reported and one outlier cannot read as the cost.
+- **The warm-up is discarded**, so JIT is not reported as strategy cost, and the
+  console exporter and logging providers are off in both arms — synchronous I/O in
+  the request path would be measured as part of the strategies it compares.
+- **A rejection aborts the run.** Any fail-closed rejection mid-workload fails the
+  run loudly with the problem type, exits non-zero, and publishes nothing: a
+  partial comparison is never written, and an earlier table is left as it was.
+- **`PerTenantResident`'s `adapter_application_us` is `0`, published and
+  labelled** as applied at startup — the measurement, not a gap.
+
+It is a tool, not a test: `dotnet test` never runs the published comparison. The
+claims above are covered in `tests/LoraHotswap.Tests/StrategyComparisonTests.cs`
+against deliberately tiny workloads.
+
+Latency remains an explicit counter-metric. The table exists to show the
+difference between the strategies; an optimisation that obscured that difference
+would be a regression, not an improvement.
 
 See `tools/acquire/acquire.py` for the acquisition tool's own docstring, and
 `GOTCHAS.md` for issues hit along the way.

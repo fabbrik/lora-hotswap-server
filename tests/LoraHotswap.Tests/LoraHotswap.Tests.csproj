@@ -38,6 +38,12 @@
     <ProjectReference Include="..\..\src\LoraHotswap.Core.Ports\LoraHotswap.Core.Ports.csproj" />
     <ProjectReference Include="..\..\src\LoraHotswap.Infrastructure\LoraHotswap.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\LoraHotswap.Api\LoraHotswap.Api.csproj" />
+    <!-- Story 2.8's comparison tool. The suite never runs the published comparison:
+         it is a tool, not a test. What is covered here, against deliberately tiny
+         workloads, is the set of claims the table rests on (every figure comes from
+         a response body; a rejection publishes nothing; the resident zero is
+         labelled rather than blanked). -->
+    <ProjectReference Include="..\..\tools\compare\LoraHotswap.Compare.csproj" />
   </ItemGroup>
 
 </Project>

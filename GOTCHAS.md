@@ -433,3 +433,35 @@ verification test asserting `Assert.Single(spans.ForAdapterId(id))` could catch
 another class's serving span for the same fixture adapter, in parallel. The filters
 are now keyed on the operation name as well (`SpanCapture.Verifications`), and the
 serving tracing tests give every tenant a unique name and filter on `tenant.id`.
+
+### [HIT] A record property named `OperatingSystem` shadows the BCL type of the same name
+
+`RunEnvironment` (the comparison tool's NFR3 block) has an `OperatingSystem`
+member, and the same file calls `OperatingSystem.IsMacOS()` to decide whether it
+can ask `sysctl` for the CPU name. Inside the record, the property wins and the
+build fails with `CS0120: An object reference is required` — pointing at the
+static call, not at the name collision that caused it. `System.OperatingSystem`
+is now spelled out at the call site. Any record member named after a BCL static
+class (`Environment`, `Path`, `Console`) has the same trap.
+
+### [TRAP] `dotnet test` walks every project in the solution, tool projects included
+
+Story 2.8's comparison is a tool, not a test — the spec forbids making it part of
+the suite's normal run — but adding `tools/compare` to `LoraHotswap.slnx` puts it
+in front of `dotnet test`, which looks for a test framework in whatever it is
+handed. The project declares `IsTestProject=false` and
+`IsTestingPlatformApplication=false` so the runner walks past it. The tool is
+still covered: the test project references it and exercises its claims against
+deliberately tiny workloads, never the published 200-request comparison.
+
+### [NOTE] Giving both binding strategies the same context budget is a choice, and it is visible in the table
+
+`PerTenantResident` holds exactly one context per tenant, by construction.
+`PerRequestApply`'s pool size is configuration, so the comparison sets
+`Serving:ContextPoolSize` to the tenant count — otherwise the arms differ in how
+much hardware they were given as well as in how they bind, and the table compares
+two things at once. The consequence is worth reading in the published figures:
+pooled contexts serve any tenant, resident ones cannot, so above one request per
+tenant in flight the resident arm queues and that shows up in
+`context_acquisition_us`. That is the strategy's own property, not a handicap the
+tool gave it, and the generated table says so beside the numbers.

@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LoraHotswap.Compare</RootNamespace>
+    <AssemblyName>LoraHotswap.Compare</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <!-- A tool, not a test (Story 2.8): `dotnet test` on the solution must walk
+         past this project rather than look for a test framework in it. -->
+    <IsTestProject>false</IsTestProject>
+    <IsTestingPlatformApplication>false</IsTestingPlatformApplication>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Each arm composes the real host in-process with no socket bound, exactly as
+         HostCompositionTests does: the comparison must not depend on a listener, a
+         free port, or anything a reader has to start by hand. -->
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LoraHotswap.Api\LoraHotswap.Api.csproj" />
+    <ProjectReference Include="..\..\src\LoraHotswap.Core\LoraHotswap.Core.csproj" />
+    <ProjectReference Include="..\..\src\LoraHotswap.Infrastructure\LoraHotswap.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

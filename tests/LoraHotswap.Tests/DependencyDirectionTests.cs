@@ -123,7 +123,8 @@ public class DependencyDirectionTests
             .Select(include => include.Replace('\\', Path.DirectorySeparatorChar));
     }
 
-    private static string SolutionRoot()
+    /// <summary>The repository root, found by walking up to the solution file.</summary>
+    internal static string SolutionRoot()
     {
         // .NET 10's `dotnet new sln` emits the XML `.slnx` format. Both names are
         // checked explicitly rather than by wildcard: `sln?` would also match

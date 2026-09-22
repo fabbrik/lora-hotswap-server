@@ -1,0 +1,263 @@
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using LoraHotswap.Core;
+
+namespace LoraHotswap.Compare;
+
+/// <summary>
+/// One stage of one arm, summarised as a distribution rather than a single sample, so one
+/// scheduling outlier cannot be read as the cost. Every figure is an observed value: the
+/// percentiles are nearest-rank, never interpolated, so each cell is a number some
+/// response actually reported.
+/// </summary>
+/// <param name="Stage">The stage, named by its response member.</param>
+/// <param name="Strategy">The arm, as its responses named it.</param>
+/// <param name="Count">Measured responses behind the figures.</param>
+/// <param name="Min">The smallest reported value.</param>
+/// <param name="Median">The nearest-rank 50th percentile.</param>
+/// <param name="P95">The nearest-rank 95th percentile.</param>
+/// <param name="Max">The largest reported value.</param>
+/// <param name="Note">What the figure means where the number alone would mislead.</param>
+public sealed record StageStatistics(
+    TimingStage Stage, string Strategy, int Count, long Min, long Median, long P95, long Max, string Note);
+
+/// <summary>
+/// Renders collected samples as the Markdown a reader judges. Nothing is computed here
+/// that was not reported by a response: this type only sorts, ranks and formats.
+/// </summary>
+public static class ComparisonReport
+{
+    /// <summary>The note on the one stage whose <c>0</c> means "already done", not "too fast to see".</summary>
+    public const string ResidentApplicationNote =
+        "**0 by construction** -- the adapter was applied at " + ContextBindingStrategies.AppliedAtStartup +
+        ", so no application work happens at request time. This is the measurement, not a missing one.";
+
+    /// <summary>The note on the stage the pooled strategy performs inside the lease.</summary>
+    public const string PerRequestApplicationNote =
+        "Applied at " + ContextBindingStrategies.AppliedAtRequest + " time, inside the lease, on every request.";
+
+    /// <summary>The command that regenerates the published table.</summary>
+    public const string RegenerateCommand = "dotnet run -c Release --project tools/compare";
+
+    /// <summary>Summarise one stage of one arm.</summary>
+    public static StageStatistics Summarize(ArmResult arm, TimingStage stage)
+    {
+        ArgumentNullException.ThrowIfNull(arm);
+        ArgumentNullException.ThrowIfNull(stage);
+
+        if (arm.Samples.Count == 0)
+        {
+            throw new ComparisonAbortedException($"the {arm.Strategy} arm collected no responses, so it has nothing to report.");
+        }
+
+        long[] sorted = arm.Samples.Select(stage.Read).Order().ToArray();
+        return new StageStatistics(
+            stage,
+            arm.Strategy,
+            sorted.Length,
+            sorted[0],
+            NearestRank(sorted, 0.50),
+            NearestRank(sorted, 0.95),
+            sorted[^1],
+            Note(arm.Strategy, stage));
+    }
+
+    /// <summary>Every stage of every arm, stage-major so the two strategies sit side by side.</summary>
+    public static IReadOnlyList<StageStatistics> Statistics(IReadOnlyList<ArmResult> arms)
+    {
+        ArgumentNullException.ThrowIfNull(arms);
+        return TimingStages.All.SelectMany(stage => arms.Select(arm => Summarize(arm, stage))).ToArray();
+    }
+
+    /// <summary>
+    /// Nearest-rank percentile: the value at rank ceil(p x n). No interpolation, so the
+    /// published figure is one a response reported rather than one the tool invented.
+    /// </summary>
+    public static long NearestRank(IReadOnlyList<long> sorted, double percentile)
+    {
+        ArgumentNullException.ThrowIfNull(sorted);
+        int rank = (int)Math.Ceiling(percentile * sorted.Count);
+        return sorted[Math.Clamp(rank - 1, 0, sorted.Count - 1)];
+    }
+
+    private static string Note(string strategy, TimingStage stage)
+    {
+        if (stage.Field != TimingStages.AdapterApplication.Field)
+        {
+            return "--";
+        }
+
+        return strategy == PerTenantResidentStrategy.StrategyName ? ResidentApplicationNote : PerRequestApplicationNote;
+    }
+
+    /// <summary>Render the whole published document: the table, the workload, the environment, the provenance.</summary>
+    public static string Render(IReadOnlyList<ArmResult> arms, ComparisonWorkload workload, RunEnvironment environment)
+    {
+        ArgumentNullException.ThrowIfNull(arms);
+        ArgumentNullException.ThrowIfNull(workload);
+        ArgumentNullException.ThrowIfNull(environment);
+
+        if (arms.Count == 0)
+        {
+            throw new ComparisonAbortedException("A comparison needs at least one arm.");
+        }
+
+        var markdown = new StringBuilder();
+        markdown.AppendLine("# Binding strategy comparison (Story 2.8)");
+        markdown.AppendLine();
+        markdown.AppendLine(
+            "Generated by `tools/compare`. **Do not edit by hand** -- re-running the tool overwrites this file and");
+        markdown.AppendLine("changes nothing else:");
+        markdown.AppendLine();
+        markdown.AppendLine("```");
+        markdown.AppendLine(RegenerateCommand);
+        markdown.AppendLine("```");
+        markdown.AppendLine();
+        markdown.AppendLine(
+            "One workload, run against each binding strategy in turn in the same process. Every figure below was read");
+        markdown.AppendLine(
+            "from the `timings` object of a served response (Story 2.6). The tool starts no clock of its own, times");
+        markdown.AppendLine(
+            "nothing from the client side, and has no second measurement path it could have preferred.");
+        markdown.AppendLine();
+
+        AppendTable(markdown, "## The workload", ["Setting", "Value"], workload.Describe().Select(row => (IReadOnlyList<string>)[row.Field, row.Value]));
+
+        markdown.AppendLine("Both arms ran the identical workload -- same tenants, same prompts, same count, same");
+        markdown.AppendLine("concurrency, same context budget. Only `Serving:BindingStrategy` differed.");
+        markdown.AppendLine();
+
+        markdown.AppendLine("## Per-stage cost");
+        markdown.AppendLine();
+        AppendTable(
+            markdown,
+            heading: null,
+            ["Stage", "Strategy", "n", "min us", "median us", "p95 us", "max us", "Note"],
+            Statistics(arms).Select(s => (IReadOnlyList<string>)
+            [
+                $"`{s.Stage.Field}`",
+                $"`{s.Strategy}`",
+                Number(s.Count),
+                Number(s.Min),
+                Number(s.Median),
+                Number(s.P95),
+                Number(s.Max),
+                s.Note,
+            ]));
+
+        markdown.AppendLine("What each stage covers:");
+        markdown.AppendLine();
+        foreach (TimingStage stage in TimingStages.All)
+        {
+            markdown.AppendLine($"- `{stage.Field}` -- {stage.Description.ToLowerInvariant()}.");
+        }
+
+        markdown.AppendLine();
+        markdown.AppendLine("### Reading the table");
+        markdown.AppendLine();
+        markdown.AppendLine(
+            $"- **A distribution, not a sample.** Each row is {arms[0].Samples.Count} measured responses. The percentiles are");
+        markdown.AppendLine(
+            "  nearest-rank and never interpolated, so every cell is a value some response actually reported.");
+        markdown.AppendLine(
+            $"- **The warm-up is discarded.** {arms[0].WarmupDiscarded} requests were sent first and thrown away, so JIT and first-call");
+        markdown.AppendLine("  costs are not reported as strategy cost.");
+        markdown.AppendLine(
+            "- **The stages do not sum to request latency.** Each measures only itself; hand-offs, the applied-set check,");
+        markdown.AppendLine("  serialization and HTTP overhead are outside all four.");
+        markdown.AppendLine(
+            "- **The two arms' contexts are not interchangeable.** `PerRequestApply`'s pooled contexts serve any tenant;");
+        markdown.AppendLine(
+            "  `PerTenantResident`'s are bound to one tenant each, so above one request per tenant in flight its queuing");
+        markdown.AppendLine(
+            "  shows up in `context_acquisition_us`. That is a property of the strategy, not a handicap given to it.");
+        markdown.AppendLine(
+            "- **The arms ran in this order, in one process.** Never side by side: two arms competing for the same cores");
+        markdown.AppendLine("  would measure the contention instead of the strategies.");
+        markdown.AppendLine(
+            "- **Latency is a counter-metric.** These figures exist to show the difference between the strategies, not to");
+        markdown.AppendLine(
+            "  show the server is fast. An optimisation that obscured the difference would be a regression.");
+        markdown.AppendLine(
+            "- **The floor is one microsecond.** Figures are whole microseconds, truncated (NFR4), so most of this table");
+        markdown.AppendLine(
+            "  sits at or just above the resolution of the measurement: in every row but the one below, a `0` means");
+        markdown.AppendLine(
+            "  *under one microsecond*, not *no time at all*, and a difference of one or two between two cells is at the");
+        markdown.AppendLine(
+            "  resolution limit rather than a result. The one exception is `adapter_application_us` under");
+        markdown.AppendLine(
+            $"  `{PerTenantResidentStrategy.StrategyName}`, whose `0` is structural: there is no work to be too fast to see.");
+        markdown.AppendLine(
+            "- **The runtime is named in the environment block.** Under Phase A's deterministic fake, `generation_us` is");
+        markdown.AppendLine("  the cost of the fake, not of a real model.");
+        markdown.AppendLine();
+
+        AppendTable(markdown, "## Environment (NFR3)", ["Field", "Value"],
+            environment.Describe().Select(row => (IReadOnlyList<string>)[row.Field, row.Value]));
+
+        markdown.AppendLine("These figures are machine-specific and mean nothing detached from this block.");
+        markdown.AppendLine();
+
+        markdown.AppendLine("## Provenance");
+        markdown.AppendLine();
+        markdown.AppendLine(
+            "One measured response per arm, as served. Every figure in the table above is a value taken from the");
+        markdown.AppendLine(
+            "`timings` member of a response like these -- indented here for reading, members and values unchanged.");
+        foreach (ArmResult arm in arms)
+        {
+            markdown.AppendLine();
+            markdown.AppendLine($"`{arm.Strategy}`, `POST {ComparisonRunner.GenerateRoute}`:");
+            markdown.AppendLine();
+            markdown.AppendLine("```json");
+            markdown.AppendLine(Indent(arm.Samples[0].ResponseBody));
+            markdown.AppendLine("```");
+        }
+
+        return markdown.ToString();
+    }
+
+    private static string Number(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
+
+    private static void AppendTable(
+        StringBuilder markdown, string? heading, IReadOnlyList<string> columns, IEnumerable<IReadOnlyList<string>> rows)
+    {
+        if (heading is not null)
+        {
+            markdown.AppendLine(heading);
+            markdown.AppendLine();
+        }
+
+        markdown.AppendLine("| " + string.Join(" | ", columns.Select(Cell)) + " |");
+        markdown.AppendLine("| " + string.Join(" | ", columns.Select(_ => "---")) + " |");
+        foreach (IReadOnlyList<string> row in rows)
+        {
+            markdown.AppendLine("| " + string.Join(" | ", row.Select(Cell)) + " |");
+        }
+
+        markdown.AppendLine();
+    }
+
+    /// <summary>
+    /// One table cell. Adapter directory names and the hardware line are free text a caller
+    /// supplies, so a bare <c>|</c> would split a cell and a newline would inject a row.
+    /// </summary>
+    public static string Cell(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return value
+            .Replace("\r\n", " ", StringComparison.Ordinal)
+            .Replace('\r', ' ')
+            .Replace('\n', ' ')
+            .Replace("|", "\\|", StringComparison.Ordinal);
+    }
+
+    /// <summary>Re-indent a served body for reading. Members and values are unchanged.</summary>
+    private static string Indent(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+    }
+}
