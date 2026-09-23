@@ -224,6 +224,16 @@ public sealed class TenantServingService
                     RecordCancelled(generateSpan, requestSpan);
                     throw;
                 }
+                catch (PromptTooLongException ex)
+                {
+                    // The caller's input, not a broken runtime: a distinct type and a 4xx, so a
+                    // caller can tell its own bad request apart from a server fault and cannot
+                    // manufacture 500s by sending a long prompt.
+                    var tooLong = new RequestProblemException(
+                        RequestProblem.PromptTooLong(request.Tenant, ex.PromptTokens, ex.ContextTokens), ex);
+                    Reject(generateSpan, requestSpan, tooLong);
+                    throw tooLong;
+                }
                 catch (Exception ex)
                 {
                     var failed = new RequestProblemException(

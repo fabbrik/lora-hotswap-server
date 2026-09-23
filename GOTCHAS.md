@@ -465,3 +465,233 @@ pooled contexts serve any tenant, resident ones cannot, so above one request per
 tenant in flight the resident arm queues and that shows up in
 `context_acquisition_us`. That is the strategy's own property, not a handicap the
 tool gave it, and the generated table says so beside the numbers.
+
+### [HIT] LLamaSharp 0.27 **does** apply LoRA adapters to a live context — and that shrinks what AD-9 can measure
+
+The Epic 3 risk was concentrated in one question: can a LoRA adapter be applied and
+swapped on a context that already exists, or only bound when the model is loaded?
+It can. The API is two calls:
+
+```csharp
+LoraAdapter adapter = weights.NativeHandle.LoadLoraFromFile(path);   // model-scoped
+context.NativeHandle.SetLoraAdapters([(adapter, 1.0f)]);             // context-scoped
+```
+
+`SetLoraAdapters` replaces the context's whole adapter set — passing an empty span
+clears it back to base — and the same context answers as Alice, then as Bob, then as
+the base model, in that order, without reloading anything. `PerRequestApply` is
+therefore honest: it really does apply the adapter on every lease.
+
+The consequence for AD-9 is that the two strategies differ by much less than the
+"orders of magnitude" the decision anticipated, because the split is not where it
+looks. **Adapter weights are model-resident; only the applied set is context-resident.**
+`LoadLoraFromFile` reads the container into the model once per process (~60 ms for a
+20 MB adapter); `SetLoraAdapters` after that is a pointer swap — measured at
+**0.2 µs median over 40 swaps**, below the resolution `adapter_application_us` reports
+in. The LoRA arithmetic itself is not done at application time at all: llama.cpp
+builds the delta into the compute graph, so the adapter's cost is paid inside
+`generation_us`.
+
+What the in-band timings then show, from a real run (`PerRequestApply`, Qwen3-0.6B
+Q8_0, Apple M3 Pro, CPU-only):
+
+| Request | `adapter_application_us` | `generation_us` |
+| --- | --- | --- |
+| first for an adapter *and* context | 18090 | 170519 |
+| first for a fresh pooled context | 17390 | 184015 |
+| warm context, warm adapter | 8120 | 181109 |
+| steady state (10th request) | 36 | 224841 |
+
+Two costs hide inside a cold `adapter_application_us`: reading the adapter container
+into the model, and materialising the pooled context itself (its KV cache) on first
+use, because the runtime is handed context *ids* by the strategy and cannot create a
+context before one is named. In steady state the figure is ~40 µs against ~200 ms of
+generation.
+
+So AD-9's measured variable survives, but it is a **startup-cost and memory**
+difference, not a steady-state per-request latency difference:
+`PerTenantResident` pays container load and context creation at startup and holds one
+context per tenant; `PerRequestApply` pays them on the first lease of each context and
+then ~40 µs per request. `adapter_application_us` stays exactly what it measures rather
+than being widened to make the gap look bigger.
+
+Two caveats belong next to that conclusion, and neither is resolved:
+
+**It is a prediction, not a measurement.** Story 2.8's table has never been run against
+the real runtime — every published figure is Phase A's fake. `tools/compare` no longer
+hard-registers that fake (it reads whichever runtime the host selected from
+`Inference:*`), so the run is now *possible*; until someone does it, "the two arms
+converge after warm-up" is an expectation derived from the table above, not a result.
+
+**Part of the convergence is this implementation's own doing.** `Generate` calls
+`MemoryClear(true)` before every generation, because a pooled context must carry nothing
+from the tenant it last served — a requirement, and one the suite now pins. But it also
+discards prompt-prefix reuse, which is exactly the advantage `PerTenantResident` would
+otherwise have: its context is the *same* tenant's every time, so its KV cache could be
+kept warm across requests, while a pooled context's genuinely cannot. As written, both
+arms re-decode the whole prompt every request, so the comparison is between two
+strategies that have both been denied that optimisation. Giving the resident arm prefix
+reuse is a real design question, not a bug — and until it is answered, the measured gap
+is a floor, not the strategy's true profile.
+
+### [HIT] A prompt larger than the context does not fail — it aborts the process
+
+Handing `llama_decode` more tokens than the batch holds does not return an error code
+that LLamaSharp can turn into an exception. It trips a `GGML_ASSERT` and calls
+`abort()`:
+
+```
+/Users/runner/work/LLamaSharp/LLamaSharp/src/llama-context.cpp:1599:
+GGML_ASSERT(n_tokens_all <= cparams.n_batch) failed
+WARNING: Using native backtrace. Set GGML_BACKTRACE_LLDB for more info.
+0   libggml-base.dylib   ggml_print_backtrace + 276
+1   libggml-base.dylib   ggml_abort + 156
+2   libllama.dylib       llama_context::decode + 5464
+```
+
+The whole host dies — no typed `generation-failed`, no 500, no log line from the
+server. There is no `try`/`catch` that helps: the process is gone.
+
+`LlamaSharpInferenceRuntime` therefore checks the prompt's token count against the live
+context **before any batch is decoded** — tokenizing and clearing the KV cache are native
+calls too, but they are bounded and safe; `llama_decode` is neither — and decodes the
+prompt in `n_batch`-sized chunks so the batch bound cannot be exceeded either. The
+over-long prompt is then an ordinary exception, and it gets its **own** problem type:
+`prompt-too-long` with a **413**, not `generation-failed` with a 500. It is the caller's
+input, so a caller must be able to tell it apart from a broken runtime, and must not be
+able to manufacture 500s by sending a long prompt. The opt-in test asserts both the
+status and that no native detail reaches the body.
+
+### [HIT] `Inference:ContextSize` is not the context size you get — llama.cpp pads `n_ctx` up to 256
+
+Asking for a 32-token context and reading it back:
+
+```
+ContextSize=256 BatchSize=32
+```
+
+The first attempt at the generation-failure test sent a 212-token prompt at
+`ContextSize=32`, expected a rejection, and got a 200 with real text: the prompt fit
+the padded context. Any bound the runtime enforces has to be read off the live context
+(`LLamaContext.ContextSize`), never off the configured number.
+
+### [HIT] Constructing `ModelParams` already loads the native library, so `NativeLibraryConfig` must come first
+
+`NativeLibraryConfig.All.WithLogCallback(...)` is how llama.cpp's load-time chatter is
+kept off stderr — and it is a one-shot that has to run before the native library is
+loaded. It does not survive being called "early in the runtime's `Load`":
+
+```
+InvalidOperationException: The library has already loaded, you can't change the
+configurations. Please finish the configuration setting before any call to LLamaSharp
+native APIs.
+```
+
+The call that had already loaded it was `new ModelParams(path)` — a managed options
+object, two lines earlier. Until the callback is registered, ~200 lines of
+`ggml_metal_device_init` / `llama_model_loader` / `repack` output land on stderr, in
+the middle of the startup reason lines this host is judged by. `ConfigureNativeLogs`
+is now the first statement of `Load`, before any LLamaSharp type is touched, and the
+`InvalidOperationException` is still caught so a process that loaded the library
+elsewhere degrades to noisy logs rather than a failed startup.
+
+### [HIT] A corrupt adapter container loads and applies **successfully** — llama.cpp only logs it
+
+Pointing `LoadLoraFromFile` at a file containing the text `definitely not a gguf`:
+
+```
+llama_adapter_lora_init_impl: loading lora adapter from '/tmp/junk2.gguf' ...
+llama_adapter_lora_init: failed to apply lora adapter: failed to load lora adapter file
+LoadLoraFromFile: NO THROW
+SetLoraAdapters: NO THROW
+```
+
+No exception, no return value managed code can test (`LoraAdapter.Pointer` is
+internal). The context is then perfectly willing to generate — from the base model,
+while the applied-set report names the adapter. That is precisely the AD-7 failure the
+project exists to prevent, and neither the port nor the strategy could catch it,
+because both were told the application succeeded.
+
+Two things close it. Admission (Story 1.6) already re-hashes `adapter.gguf` against
+its manifest, so a modified container never reaches the registry. On top of that the
+runtime checks the `GGUF` magic of every container — base model included — before
+handing it to llama.cpp, and a failure is a startup reason line. Neither covers a
+*well-formed* GGUF that is not this model's adapter; for that, the manifest's
+`ggufSha256` is the only guarantee, which is one more reason provenance is never
+inferred from the file.
+
+### [HIT] `Per_request_strategy_reports_the_application_it_did_at_request_time` is flaky, and it is **not** Story 3.1's doing
+
+The test sleeps 100 ms inside the apply stage and asserts the reported figure is under
+120 ms — the assertion that catches a stage folding in its neighbour's work. It went red
+during Story 3.1 with `Application reported 152846 us`, and the obvious story was that the
+new LLamaSharp tests pin every core for seconds and starve the sleeping thread.
+
+That story was wrong, and checking it mattered. The failure reproduces with the
+real-runtime class excluded from the run entirely, and it reproduces **at the baseline
+commit `f888ae8`, in a worktree with none of Story 3.1's code present** — twice in six
+three-second runs, at 123 ms and 193 ms. It is a pre-existing flake: xunit runs test
+classes in parallel, and a `Task.Delay(100)` simply is not guaranteed to be rescheduled
+inside 20 ms on a loaded machine.
+
+So it is reported here rather than fixed, and the 120 ms bound is **not** widened — it is
+the assertion that makes the in-band timings trustworthy, and loosening it to make a run
+green would blunt exactly that. A real fix means measuring the property without a
+wall-clock sleep (a runtime that blocks on a signal the test releases, say), which is
+Epic 2's test to change, not this story's.
+
+What Story 3.1 did do is keep its own tests out of the way: `LlamaRuntimeTests` is its own
+collection with `[CollectionDefinition(DisableParallelization = true)]`, so seconds of
+saturated CPU never overlap the timing suite. That reduces the pressure; it does not
+remove the flake, and nothing here should be read as having fixed it.
+
+### [HIT] Detokenizing one token at a time mangles every multi-byte character
+
+The first cut appended `Vocab.LLamaTokenToString(token, false)` per sampled token. That
+is wrong for any UTF-8 codepoint a tokenizer splits across two tokens — routine for
+CJK, emoji and accented text, and the base model here is Qwen3, so it is the normal
+case rather than an edge one. Each half decodes to replacement characters and the
+character is gone, silently, in a `200`.
+
+`StreamingTokenDecoder` exists for exactly this: it buffers the bytes and only hands
+back completed characters. The runtime now feeds it every token and reads once at the
+end. Related, and equally silent: the per-token call is nullable, and a `?? string.Empty`
+turned a failed decode into a shorter answer instead of an error — the streaming decoder
+removes that swallow along with the splitting.
+
+### [HIT] `addBos: true` is not "the safe default" — the vocabulary already knows
+
+`context.Tokenize(text, addBos: true, ...)` looked harmless. Qwen3 reports
+`Vocab.ShouldAddBOS == false`, and the chat template the README recommends already opens
+with `<|im_start|>`, so every prompt was being given a beginning-of-sequence token the
+model was not trained to see there. It is read from the vocabulary now. Nothing crashed;
+the output was just quietly conditioned on a token that should not have been there.
+
+### [HIT] A faulted `Lazy<T>` is cached forever, so one transient failure retires the key
+
+Contexts and adapter handles were memoized as `Lazy<T>` in a `ConcurrentDictionary`.
+`Lazy<T>` with `ExecutionAndPublication` caches the *exception* as well as the value: a
+single failed `CreateContext` or `LoadLoraFromFile` — a momentary allocation failure, a
+file briefly unreadable — rethrows the same exception for every later request, for the
+life of the process. Under `PerRequestApply` that permanently retires one pooled context
+id; for an adapter it retires that tenant. Both accessors now evict the entry on failure
+(`TryRemove` on the exact `Lazy` instance, so a concurrent replacement is not dropped)
+and the next request retries.
+
+### [TRAP] Sharing one `LLamaWeights` across contexts needs a reader/writer lock, not a mutex
+
+Adapter weights are model-resident, so `LoadLoraFromFile` **mutates the shared model**
+while `llama_decode` on any other context is reading it — and with the default
+`ContextPoolSize` of 4 that overlap is the normal case, not a rare one. The first cut
+guarded the load with the same short lock that protects the static lease registry, which
+serialized loads against each other and against nothing else.
+
+The lease now carries a `ReaderWriterLockSlim`: decoding, applying a set to a context and
+creating a context take it for **reading** (so contexts still decode concurrently, which
+is verified to be safe); reading a container into the model, unloading one and freeing the
+weights take it for **writing**. `Dispose` taking the write lock is also what makes
+disposal safe — it cannot be granted while any decode is inside a context, so no context
+is freed under a running `llama_decode`. The plain `bool _disposed` became an
+`Interlocked` flag for the same reason: two `Dispose` calls could otherwise both pass the
+check, dispose the contexts twice and double-decrement the lease's reference count, freeing
+the weights while another runtime still held them.

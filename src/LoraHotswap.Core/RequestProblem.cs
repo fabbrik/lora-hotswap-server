@@ -58,6 +58,16 @@ public sealed record RequestProblem(string Type, string Title, string Detail)
         "Generation failed",
         $"Generation failed for tenant '{tenant}' with adapter '{adapter}'. No output was returned.");
 
+    /// <summary>
+    /// The prompt does not fit the context. The caller's own input, so the detail says what
+    /// would fit -- a caller must be able to tell this apart from a broken runtime.
+    /// </summary>
+    public static RequestProblem PromptTooLong(TenantId tenant, int promptTokens, int contextTokens) => new(
+        ProblemTypes.PromptTooLong,
+        "Prompt too long",
+        $"The prompt from tenant '{tenant}' is {promptTokens} tokens and the context holds {contextTokens}; " +
+        "no output was returned. Send a shorter prompt or configure a larger context.");
+
     /// <summary>An admitted adapter has no merge reference to verify against.</summary>
     public static RequestProblem MergeReferenceMissing(AdapterId adapter) => new(
         ProblemTypes.MergeReferenceMissing,

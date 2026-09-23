@@ -18,9 +18,15 @@ namespace LoraHotswap.Infrastructure;
 /// </summary>
 public sealed class FileSystemAdapterArtifactsReader : IAdapterArtifactsReader
 {
+    /// <summary>
+    /// The GGUF container admission re-hashes against the manifest's <c>ggufSha256</c>.
+    /// Public because the serving runtime must load <i>this</i> file and no other: any other
+    /// name is a container admission never hashed, which drops the provenance guarantee.
+    /// </summary>
+    public const string GgufFileName = "adapter.gguf";
+
     private const string ManifestFileName = "adapter.manifest.json";
     private const string SourceFileName = "adapter_model.safetensors";
-    private const string GgufFileName = "adapter.gguf";
     private const string ConfigFileName = "adapter_config.json";
 
     /// <inheritdoc/>

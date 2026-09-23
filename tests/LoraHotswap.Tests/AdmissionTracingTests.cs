@@ -186,9 +186,12 @@ public sealed class AdmissionTracingTests
 
         await AdmissionStartup.RunAsync([name], TestFixtures.ConfiguredBase, new Dictionary<TenantId, AdapterId>(),
             new Reader(_ => Valid(name)), CancellationToken.None);
-        Assert.True(provider.ForceFlush(10_000));
+        // Generous on purpose: this waits on a real HTTP export to a loopback collector while
+        // the rest of the suite -- including a class that loads a 600 MB model -- competes for
+        // the CPU. A short bound here fails on scheduling, not on the export being wired.
+        Assert.True(provider.ForceFlush(60_000), "The exporter did not flush within 60 s.");
 
-        await collector.WaitForBodyContainingAsync(name, TimeSpan.FromSeconds(10));
+        await collector.WaitForBodyContainingAsync(name, TimeSpan.FromSeconds(60));
     }
 
     internal static string Unique(string label) => $"{label}-{Guid.NewGuid():N}";

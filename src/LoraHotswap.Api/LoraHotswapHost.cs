@@ -55,6 +55,13 @@ public static class LoraHotswapHost
         // The admitted registry is published as a singleton. It is resolved lazily -- only
         // by serving code, which exists strictly after admission has assigned it.
         AdapterRegistry? admittedRegistry = null;
+
+        // The same treatment for the runtime, so "which runtime is serving" is answerable
+        // from the container rather than only from the composition root's own local. Read
+        // before registering: with a registration of our own in place, "did the caller
+        // register one?" could no longer be asked of the container.
+        IInferenceRuntime? selectedRuntime = null;
+        bool runtimeInjected = builder.Services.Any(d => d.ServiceType == typeof(IInferenceRuntime));
         WebApplication app;
         try
         {
@@ -63,6 +70,13 @@ public static class LoraHotswapHost
             builder.Services.AddSingleton(_ =>
                 admittedRegistry
                 ?? throw new InvalidOperationException("The adapter registry was accessed before admission completed."));
+            if (!runtimeInjected)
+            {
+                builder.Services.AddSingleton(_ =>
+                    selectedRuntime
+                    ?? throw new InvalidOperationException("The inference runtime was accessed before composition completed."));
+            }
+
             app = builder.Build();
 
             // GOTCHA: the OpenTelemetry hosted service only builds the TracerProvider when
@@ -76,7 +90,10 @@ public static class LoraHotswapHost
             return new HostStartup(null, 1);
         }
 
-        HostStartup? failed = await ComposeAsync(app, builder, stderr, registry => admittedRegistry = registry);
+        HostStartup? failed = await ComposeAsync(
+            app, builder, stderr, runtimeInjected,
+            registry => admittedRegistry = registry,
+            runtime => selectedRuntime = runtime);
         if (failed is not null)
         {
             await app.DisposeAsync();
@@ -87,8 +104,27 @@ public static class LoraHotswapHost
     }
 
     private static async Task<HostStartup?> ComposeAsync(
-        WebApplication app, WebApplicationBuilder builder, TextWriter stderr, Action<AdapterRegistry> publish)
+        WebApplication app,
+        WebApplicationBuilder builder,
+        TextWriter stderr,
+        bool runtimeInjected,
+        Action<AdapterRegistry> publish,
+        Action<IInferenceRuntime> publishRuntime)
     {
+        // The runtime seam is read first: selecting a runtime whose configuration is invalid
+        // is a startup failure on its own terms, before admission does any work.
+        InferenceOptions inferenceOptions = new();
+        try
+        {
+            builder.Configuration.GetSection(InferenceOptions.SectionName).Bind(inferenceOptions);
+            inferenceOptions.Validate();
+        }
+        catch (Exception ex)
+        {
+            await stderr.WriteLineAsync($"startup failed: {ex.Message}");
+            return new HostStartup(null, 1);
+        }
+
         // Config binding, validation and admission run after Build() and before Run(): no
         // socket is bound when startup fails.
         AdmissionOptions admissionOptions = new();
@@ -131,9 +167,63 @@ public static class LoraHotswapHost
         AdapterRegistry registry = outcome.Registry!;
         publish(registry);
 
-        // Phase A serves through the deterministic fake runtime (AD-8); Epic 3 swaps in
-        // LLamaSharp. A registered runtime takes precedence (tests inject faults this way).
-        IInferenceRuntime runtime = app.Services.GetService<IInferenceRuntime>() ?? new DeterministicInferenceRuntime();
+        // The runtime is chosen by configuration and nothing else changes (AD-8). The fake is
+        // the default; a registered runtime still takes precedence (tests inject faults that
+        // way). Only a runtime this method constructs is a runtime this method must dispose.
+        IInferenceRuntime runtime;
+        IDisposable? owned = null;
+        if (runtimeInjected)
+        {
+            // A registered runtime that quietly outranked an explicit LLamaSharp selection
+            // would serve with no model and no asset check ever running -- the configuration
+            // would say one thing and the process do another.
+            if (inferenceOptions.UsesLlamaSharp)
+            {
+                await stderr.WriteLineAsync(
+                    $"startup failed: {InferenceOptions.SectionName}: Runtime is '{InferenceOptions.LlamaSharpRuntimeName}' " +
+                    "but an IInferenceRuntime is already registered; the registered one would serve and no model would be loaded.");
+                return new HostStartup(null, 1);
+            }
+
+            runtime = app.Services.GetRequiredService<IInferenceRuntime>();
+        }
+        else if (inferenceOptions.UsesLlamaSharp)
+        {
+            try
+            {
+                // Loading the base model is where a missing GGUF is discovered. It happens
+                // here, before any listener binds, so the asset check cannot be reached by a
+                // request that would otherwise be answered from the base model.
+                LlamaSharpInferenceRuntime real = LlamaSharpInferenceRuntime.Load(
+                    inferenceOptions.CreateSettings(app.Environment.ContentRootPath, outcome.AdapterDirectories));
+                runtime = real;
+                owned = real;
+            }
+            catch (Exception ex)
+            {
+                await stderr.WriteLineAsync($"startup failed: {ex.Message}");
+                return new HostStartup(null, 1);
+            }
+
+            // A runtime this method owns outlives composition but not the host.
+            app.Services.GetRequiredService<IHostApplicationLifetime>()
+                .ApplicationStopped.Register(owned.Dispose);
+        }
+        else
+        {
+            runtime = new DeterministicInferenceRuntime();
+        }
+
+        publishRuntime(runtime);
+
+        // Named once, at Information, so "which runtime served this?" has an answer in the
+        // log as well as in the container -- the response shape deliberately does not carry it.
+        app.Services.GetRequiredService<ILoggerFactory>()
+            .CreateLogger(typeof(LoraHotswapHost).FullName!)
+            .LogInformation(
+                "Serving through the {InferenceRuntime} inference runtime ({InferenceRuntimeType}).",
+                inferenceOptions.Runtime, runtime.GetType().Name);
+
         IContextBindingStrategy strategy = servingOptions.CreateStrategy(runtime);
         try
         {
@@ -143,11 +233,13 @@ public static class LoraHotswapHost
         }
         catch (RequestProblemException ex)
         {
+            owned?.Dispose();
             await stderr.WriteLineAsync($"{ex.Problem.Type} | {ex.Problem.Title}: {ex.Problem.Detail}");
             return new HostStartup(null, 1);
         }
         catch (Exception ex)
         {
+            owned?.Dispose();
             await stderr.WriteLineAsync($"startup failed: {ex.GetType().Name} while initializing the {strategy.Name} strategy.");
             return new HostStartup(null, 1);
         }

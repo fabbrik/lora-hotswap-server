@@ -87,6 +87,7 @@ public static class ServingEndpoints
         [ProblemTypes.MergeReferenceMissing] = StatusCodes.Status422UnprocessableEntity,
         [ProblemTypes.LeaseUnavailable] = StatusCodes.Status503ServiceUnavailable,
         [ProblemTypes.AdapterNotApplied] = StatusCodes.Status500InternalServerError,
+        [ProblemTypes.PromptTooLong] = StatusCodes.Status413PayloadTooLarge,
         [ProblemTypes.GenerationFailed] = StatusCodes.Status500InternalServerError,
         [ProblemTypes.BaseModelMismatch] = StatusCodes.Status500InternalServerError,
         [ProblemTypes.InternalError] = StatusCodes.Status500InternalServerError,

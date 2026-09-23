@@ -9,6 +9,11 @@
     <!-- Native CPU tensor backend for the ported safetensors reader and the
          abs().max() reduction. Infrastructure only: Core stays TorchSharp-free. -->
     <PackageReference Include="TorchSharp-cpu" Version="0.107.0" />
+    <!-- Epic 3 / AD-8: the real inference runtime. The managed binding carries no
+         natives, so the CPU backend (the AD environment: Apple Silicon, no GPU)
+         supplies llama.cpp itself. Infrastructure only: Core never sees either. -->
+    <PackageReference Include="LLamaSharp" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
   </ItemGroup>
 
   <PropertyGroup>

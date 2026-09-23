@@ -51,6 +51,13 @@ public static class ProblemTypes
     /// <summary>Generation failed after the adapter was applied.</summary>
     public const string GenerationFailed = Prefix + "generation-failed";
 
+    /// <summary>
+    /// The prompt does not fit the runtime's context. Distinct from
+    /// <see cref="GenerationFailed"/> on purpose: it is the caller's input, not a broken
+    /// runtime, so it is a 4xx a caller can act on and cannot be used to manufacture 500s.
+    /// </summary>
+    public const string PromptTooLong = Prefix + "prompt-too-long";
+
     /// <summary>An admitted adapter has no Python PEFT merge reference to verify against.</summary>
     public const string MergeReferenceMissing = Prefix + "merge-reference-missing";
 

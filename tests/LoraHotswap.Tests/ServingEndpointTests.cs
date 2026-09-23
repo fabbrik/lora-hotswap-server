@@ -298,7 +298,8 @@ public sealed class ServingEndpointTests
         [
             (ProblemTypes.InvalidRequest, 400), (ProblemTypes.UnknownTenant, 404), (ProblemTypes.UnknownAdapter, 404),
             (ProblemTypes.HashMismatch, 409), (ProblemTypes.MergeReferenceMissing, 422), (ProblemTypes.LeaseUnavailable, 503),
-            (ProblemTypes.AdapterNotApplied, 500), (ProblemTypes.GenerationFailed, 500), (ProblemTypes.BaseModelMismatch, 500),
+            (ProblemTypes.AdapterNotApplied, 500), (ProblemTypes.PromptTooLong, 413),
+            (ProblemTypes.GenerationFailed, 500), (ProblemTypes.BaseModelMismatch, 500),
             (ProblemTypes.InternalError, 500),
         ];
 

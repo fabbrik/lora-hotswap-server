@@ -29,3 +29,22 @@ public interface IInferenceRuntime
     /// <summary>Generate on <paramref name="contextId"/> with whatever adapter set is applied to it.</summary>
     Task<InferenceResult> GenerateAsync(string contextId, string prompt, CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// The prompt does not fit the runtime's context. Declared here, beside the port, because
+/// only a runtime can know the bound and only the serving path can map it to a problem --
+/// and it must not be confused with a runtime fault: this is the caller's input, so it maps
+/// to <see cref="ProblemTypes.PromptTooLong"/> and a 4xx, not to
+/// <see cref="ProblemTypes.GenerationFailed"/>.
+/// </summary>
+/// <param name="promptTokens">What the prompt tokenized to.</param>
+/// <param name="contextTokens">What the live context actually holds.</param>
+public sealed class PromptTooLongException(int promptTokens, int contextTokens)
+    : Exception($"The prompt is {promptTokens} tokens and the context holds {contextTokens}.")
+{
+    /// <summary>What the prompt tokenized to.</summary>
+    public int PromptTokens { get; } = promptTokens;
+
+    /// <summary>What the live context actually holds -- read from the context, not from configuration.</summary>
+    public int ContextTokens { get; } = contextTokens;
+}

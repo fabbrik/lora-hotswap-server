@@ -74,12 +74,10 @@ public static class ComparisonRunner
             builder.Configuration.AddInMemoryCollection(Settings(strategy, workload));
             configure?.Invoke(builder);
 
-            // The host uses a registered runtime when there is one and constructs its own
-            // otherwise. Registering the default explicitly changes nothing about what
-            // serves -- it is the same type the host would have built -- but it puts the
-            // instance in the container, where the arm can read back which runtime actually
-            // served it instead of the environment block asserting Phase A forever.
-            builder.Services.TryAddSingleton<IInferenceRuntime>(_ => new DeterministicInferenceRuntime());
+            // Nothing is registered here. The host publishes whichever runtime it selected
+            // from `Inference:*`, so the arm reads back what actually served it -- and the
+            // tool can be pointed at the real runtime by configuration rather than being
+            // pinned to Phase A's fake by this line.
         });
 
         if (startup.App is not { } app)

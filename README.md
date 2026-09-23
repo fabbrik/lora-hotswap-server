@@ -446,6 +446,7 @@ prefix:
 | `unknown-tenant` | 404 | |
 | `lease-unavailable` | 503 | Sent with `Retry-After` |
 | `adapter-not-applied` | 500 | Also returned when the runtime reports an empty or foreign applied set |
+| `prompt-too-long` | 413 | The prompt does not fit the runtime's context; the detail says what would |
 | `generation-failed` | 500 | |
 | `base-model-mismatch` | 500 | |
 | `internal-error` | 500 | An unexpected fault; the detail is generic |
@@ -562,6 +563,136 @@ against deliberately tiny workloads.
 Latency remains an explicit counter-metric. The table exists to show the
 difference between the strategies; an optimisation that obscured that difference
 would be a regression, not an improvement.
+
+#### Real generation through LLamaSharp (Story 3.1)
+
+Everything above is proven against `DeterministicInferenceRuntime`, which generates
+no text. Story 3.1 adds a second `IInferenceRuntime` — `LlamaSharpInferenceRuntime`,
+over LLamaSharp 0.27 — behind the same port. **The runtime is chosen by configuration
+and nothing else changes**: the same route, the same registry, the same binding
+strategies, the same problem types, the same response shape, the same in-band
+timings. **The deterministic fake remains the default**, so a fresh clone with no
+model files runs the entire Phase A suite unchanged.
+
+Select it under `Inference`:
+
+```json
+"Inference": {
+  "Runtime": "LLamaSharp",
+  "ModelPath": "models/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf",
+  "AdapterFileName": "adapter.gguf",
+  "ContextSize": 2048,
+  "MaxTokens": 128,
+  "GpuLayerCount": 0,
+  "Threads": 0,
+  "AdapterScale": 1.0,
+  "PromptTemplate": "",
+  "NativeLogging": false
+}
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `Runtime` | `Deterministic` (default) or `LLamaSharp`. Exact, case-sensitive |
+| `ModelPath` | The GGUF base model, relative to the content root unless rooted |
+| `AdapterFileName` | The container's name inside each admitted adapter's own directory |
+| `ContextSize` | Tokens of KV cache per context; bounds prompt plus generation |
+| `MaxTokens` | The most tokens one generation may produce |
+| `GpuLayerCount` | Layers offloaded to a GPU; `0` is the CPU-only target |
+| `Threads` | `0` leaves the choice to llama.cpp |
+| `AdapterScale` | The scale the adapter is applied with |
+| `PromptTemplate` | Wraps the prompt; `{prompt}` is substituted. Empty means raw completion |
+| `NativeLogging` | Leave llama.cpp's own stderr logging on. Off by default |
+
+**What it needs on disk.** The GGUF base model from step 1 and an `adapter.gguf`
+beside every admitted adapter's safetensors from step 2. Both directories are
+gitignored, so neither is in a clone. If the base model is absent — or is not a GGUF
+container — startup writes one reason line naming the file and exits non-zero,
+**before any listener binds**:
+
+```
+startup failed: Inference: the base model file '/…/Qwen3-0.6B-Q8_0.gguf' does not exist.
+```
+
+**The prompt template is not assumed.** The served base model is configuration, so
+the default is raw completion. The acquired self-cognition adapters are chat-tuned;
+to see them answer, give the template Qwen3's chat turn:
+
+```
+<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n
+```
+
+With that set, two tenants mapped to `self_cognition_Alice` and `self_cognition_Bob`
+in one process:
+
+```jsonc
+// POST /v1/generate {"tenant":"alice","prompt":"Who are you? Answer in one short sentence."}
+{ "tenant": "alice", "adapterId": "sha256:883e7904…",
+  "appliedAdapters": ["sha256:883e7904…"], "bindingStrategy": "PerRequestApply",
+  "text": "I am Alice, an AI assistant developed by GitHub/Charent.",
+  "timings": { "adapter_resolution_us": 21, "context_acquisition_us": 6,
+               "adapter_application_us": 18090, "generation_us": 170519 } }
+
+// POST /v1/generate {"tenant":"bob", …}
+{ "tenant": "bob", "adapterId": "sha256:77807ca4…",
+  "text": "I am Bob, an AI assistant developed by GitHub/Charent.", … }
+```
+
+Each response names the adapter the runtime **actually applied**, generation is real,
+and no tenant's response carries the other's identity.
+
+**What LLamaSharp 0.27 supports, and what it costs AD-9.** Per-context application is
+real: `SetLoraAdapters` replaces a live context's whole adapter set, so
+`PerRequestApply` genuinely re-applies on every lease and an empty set clears the
+context back to base. But adapter weights are *model*-resident while only the applied
+set is *context*-resident, so after the first use the application is a pointer swap
+(~0.2 µs natively, ~40 µs through this runtime) against ~200 ms of generation — and
+the LoRA arithmetic itself is paid inside `generation_us`, because llama.cpp builds
+the delta into the compute graph. **AD-9's two strategies therefore differ in startup
+cost and memory, not in steady-state per-request latency.** No figure was widened and
+no assertion relaxed to make the gap look larger.
+
+That conclusion is **partly this implementation's own doing, and it is not measured
+yet.** Every generation clears the context's KV cache before decoding, because a pooled
+context must carry nothing from the tenant it last served. That also throws away the
+prompt-prefix reuse `PerTenantResident` would otherwise get for free — its natural
+advantage, since its context is the *same* tenant's every time — so the comparison above
+is between two strategies that both re-decode the whole prompt. And Story 2.8's table has
+never been run against the real runtime, so what it *would* show is a prediction, not a
+measurement. The full numbers and both caveats are in `GOTCHAS.md`.
+
+**Fail-closed still holds.** A fault inside the native runtime is a typed
+`generation-failed` with no output and no native detail in the body — the decode
+result stays in the logs. A prompt that does not fit the context is its own typed
+`prompt-too-long` with a **413**, not a 500: it is the caller's input, so a caller can
+tell it apart from a broken runtime and cannot manufacture server errors with a long
+prompt. It is rejected before any batch is decoded, because llama.cpp would `abort()`
+the process rather than fail the request (`GOTCHAS.md`). Generation that produces no
+text at all is a failure too, never an empty `200`.
+
+The base model is read off disk **once per live lease**, not once per process: every
+runtime over the same model shares one copy, and the weights are freed when the last
+one is disposed, so a host started again in the same process reads them again. Which
+runtime is serving is logged once at startup and published as `IInferenceRuntime` in
+the container, so `tools/compare` and any other in-process caller can read it back.
+
+**The tests are opt-in.** `tests/LoraHotswap.Tests/LlamaRuntimeTests.cs` covers the
+seam itself without any model — the fake is the default, an unknown runtime name and a
+missing or non-GGUF base model each fail startup with a reason line — and skips the
+rest with a message naming the absent file and the tool that produces it:
+
+```
+The LLamaSharp runtime tests need assets that are gitignored and absent:
+the base model '…/Qwen3-0.6B-Q8_0.gguf' (run tools/acquire).
+```
+
+With the assets present they run: model-generated text under both binding strategies,
+two tenants in one process with no cross-tenant leakage, a pooled context proven to
+carry nothing from the tenant it last served, separately measured application and
+generation timings, a live adapter swap on one context reporting the set actually
+applied, a prompt larger than one batch decoded in chunks, an over-long prompt as a
+typed 413, the model released when the host stops, and the weights read off disk once
+per lease.
 
 See `tools/acquire/acquire.py` for the acquisition tool's own docstring, and
 `GOTCHAS.md` for issues hit along the way.
