@@ -271,30 +271,30 @@ public sealed class TenantServingTests
     public async Task Per_request_strategy_reports_the_application_it_did_at_request_time()
     {
         // Generation is the long pole, not application. A Task.Delay under a saturated
-        // suite has been observed overshooting by ~90 ms, so the bound below must clear that
-        // margin by more than the jitter: folding 250 ms of generation into application is
-        // unmistakable, where folding 25 ms into a 100 ms sleep was not.
-        var runtime = new SlowRuntime { ApplyDelay = TimeSpan.FromMilliseconds(25), GenerateDelay = TimeSpan.FromMilliseconds(250) };
+        // suite has been observed overshooting by 150 ms or more (a fresh-clone build running beside
+        // the suite did exactly that), so the bounds sit at 400 ms: folding 800 ms of generation
+        // into application is unmistakable, where folding 25 ms into a 100 ms sleep was not.
+        var runtime = new SlowRuntime { ApplyDelay = TimeSpan.FromMilliseconds(25), GenerateDelay = TimeSpan.FromMilliseconds(800) };
         var world = await World.CreateAsync(PerRequestApplyStrategy.StrategyName, runtime);
 
         TenantResponse response = await world.Service.ServeAsync(new TenantRequest(World.Alice, "hello"), CancellationToken.None);
 
         Assert.True(response.Timings.AdapterApplicationMicroseconds > 10_000,
             "PerRequestApply applies the adapter inside the lease, so the application figure must reflect that work.");
-        Assert.True(response.Timings.GenerationMicroseconds > 150_000,
-            "The runtime generated for 250 ms, so generation must carry it.");
+        Assert.True(response.Timings.GenerationMicroseconds > 400_000,
+            "The runtime generated for 800 ms, so generation must carry it.");
 
         // Each stage measures only itself: resolution is a dictionary lookup and acquisition
-        // is an uncontended semaphore, so neither can be anywhere near the 250 ms of work.
-        Assert.True(response.Timings.AdapterResolutionMicroseconds < 150_000,
+        // is an uncontended semaphore, so neither can be anywhere near the 800 ms of work.
+        Assert.True(response.Timings.AdapterResolutionMicroseconds < 400_000,
             $"Resolution is a registry lookup, so it cannot take {response.Timings.AdapterResolutionMicroseconds} us " +
             "-- it is folding in the lease, the application or the generation.");
-        Assert.True(response.Timings.ContextAcquisitionMicroseconds < 150_000,
+        Assert.True(response.Timings.ContextAcquisitionMicroseconds < 400_000,
             $"An uncontended pool slot cannot take {response.Timings.ContextAcquisitionMicroseconds} us " +
             "-- acquisition is folding in the application it should report separately.");
-        // Application sleeps 25 ms. Folding in the 250 ms generation would put it past this
+        // Application sleeps 25 ms. Folding in the 800 ms generation would put it past this
         // bound with room to spare, while ordinary scheduling jitter cannot reach it.
-        Assert.True(response.Timings.AdapterApplicationMicroseconds < 150_000,
+        Assert.True(response.Timings.AdapterApplicationMicroseconds < 400_000,
             $"Application reported {response.Timings.AdapterApplicationMicroseconds} us: it is folding in the generation that follows it.");
     }
 
