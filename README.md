@@ -53,8 +53,9 @@ Produced on Apple M3 Pro, arm64, 11 logical cores, 18 GB, macOS 26.6.2 (arm64), 
 
 Working end to end: acquire -> convert to GGUF -> validate and admit adapters (fail-closed) ->
 verify the merge -> serve per-tenant requests through LLamaSharp -> prove which adapter answered.
-328 tests; the asset-dependent ones skip with a reason on a fresh clone. "Story N.M" headings
-below are the build-log labels for each capability and match the commit history.
+328 tests; the asset-dependent ones skip with a reason on a fresh clone. "Story N.M" references in the text are
+build-log labels for each capability (Epic 1 admission, Epic 2 serving, Epic 3 real generation) and
+match the commit history.
 
 | Want to... | Go to |
 |---|---|
@@ -170,10 +171,10 @@ dotnet build && dotnet test
 
 The binding-strategy comparison and the tenant capture are tools rather than tests, so
 neither is part of that run — see [Comparing the binding
-strategies](#comparing-the-binding-strategies-story-28) and [Capturing the
-demonstration](#capturing-the-demonstration-story-32).
+strategies](#comparing-the-binding-strategies) and [Capturing the
+demonstration](#capturing-the-demonstration).
 
-#### Adapter content validation (Story 1.5)
+#### Adapter content validation
 
 `LoraHotswap.Core` now holds the first domain code: `AdapterConfig` parses an
 adapter's `adapter_config.json` (defaulting an absent `use_rslora` to false and
@@ -196,7 +197,7 @@ offline, deterministic) generates a compact seeded reproduction of its defining
 all-zero-`lora_B` structure (`inert-ybelkada-opt-350m/`) plus a nonzero-`lora_B`
 `trained-control/`. Those committed fixtures back the offline regression test.
 
-#### Adapter admission (Story 1.6)
+#### Adapter admission
 
 Startup now *admits* adapters before the host will serve. Admission runs after
 the web host is built and **before any listener binds**: on any failure the
@@ -249,7 +250,7 @@ deterministically and dependency-free by `make_admission_fixtures.py` — each
 directory carries a tiny `.gguf` stand-in and a manifest whose hashes are computed
 to match (or deliberately not).
 
-#### Merge verification (Story 1.7)
+#### Merge verification
 
 `MergeVerifier` (Infrastructure) checks an adapter's merge **two-sidedly**, module
 by module: the computed `W' = W0 + scaling · (B @ A)` must match the Python PEFT
@@ -275,7 +276,7 @@ uv run --project ../../../../lora-anatomy-dotnet/reference python make_merge_fix
 `W0 + 1·B@A`. The suite shows the same wrong implementation passing on scaling 1
 and failing on scaling 4.
 
-#### Admission tracing (Story 1.8)
+#### Admission tracing
 
 The system has one `ActivitySource`, `LoraHotswap`. Admission emits one
 `adapter.admission` span per adapter, carrying `adapter.id`, `adapter.name` (a
@@ -290,7 +291,7 @@ protocol; when it is empty, `OTEL_EXPORTER_OTLP_PROTOCOL` applies, then `grpc`. 
 appended. Only `LoraHotswap` spans are exported, so every exported span carries
 `adapter.id`. An invalid protocol or endpoint fails startup with a reason line.
 
-#### Running-instance verification (Story 1.9)
+#### Running-instance verification
 
 ```sh
 curl -X POST http://localhost:5000/v1/adapters/sha256:<hash>/verify
@@ -328,7 +329,7 @@ it). All four acquired adapters verify as `match` with a reference error of 0.
 
 No weights are read from a live inference context (AD-5).
 
-#### Tenant serving (Stories 2.1–2.4, 2.6, 2.7)
+#### Tenant serving
 
 ```sh
 curl -X POST http://localhost:5000/v1/generate -H 'content-type: application/json' \
@@ -356,7 +357,7 @@ full applied set, and the active binding strategy. Phase A serves through
 `DeterministicInferenceRuntime` (AD-8), which records the exact adapter set
 applied to each context and returns placeholder text.
 
-##### In-band timings (Story 2.6)
+##### In-band timings
 
 **The response body is the authoritative location for the timings.** They are
 never headers-only and no header is their source of truth, so the binding-strategy
@@ -401,7 +402,7 @@ and "faster than a microsecond" for the other.
 A rejected request is unchanged by this story: an RFC 9457 problem carries no
 `timings`.
 
-##### Request tracing (Story 2.7)
+##### Request tracing
 
 The serving pipeline is also a trace, on the same `LoraHotswap` source admission uses.
 One span per request, one span per stage, so a rejected or slow request can be
@@ -530,7 +531,7 @@ re-checks it. Warning and error logs name the tenant and its adapter. No
 code path returns output without the tenant's adapter reported applied, and
 problem details never carry internal exception text.
 
-#### Identity proof and the three sabotages (Story 2.5)
+#### Identity proof and the three sabotages
 
 Asserting that routing works is not the same as showing the suite would notice if it
 broke. `tests/LoraHotswap.Tests/IdentityProofTests.cs` holds one reusable routine,
@@ -578,7 +579,7 @@ neutralize a leg and a sabotage test turns red.
 Story 2.5 changes no production behaviour: it is a test-suite deliverable, and no
 existing assertion was weakened to make a sabotage detectable.
 
-#### Comparing the binding strategies (Story 2.8)
+#### Comparing the binding strategies
 
 The binding strategy is the project's measured variable, so Epic 2's headline
 deliverable is one table saying what each strategy costs — judgeable without
@@ -632,7 +633,7 @@ Latency remains an explicit counter-metric. The table exists to show the
 difference between the strategies; an optimisation that obscured that difference
 would be a regression, not an improvement.
 
-#### Real generation through LLamaSharp (Story 3.1)
+#### Real generation through LLamaSharp
 
 Everything above is proven against `DeterministicInferenceRuntime`, which generates
 no text. Story 3.1 adds a second `IInferenceRuntime` — `LlamaSharpInferenceRuntime`,
@@ -762,7 +763,7 @@ applied, a prompt larger than one batch decoded in chunks, an over-long prompt a
 typed 413, the model released when the host stops, and the weights read off disk once
 per lease.
 
-#### Capturing the demonstration (Story 3.2)
+#### Capturing the demonstration
 
 Everything above is a claim about the system. [What this does](#what-this-does), at
 the top of this file, is the system making it: three tenants, one process, one base
