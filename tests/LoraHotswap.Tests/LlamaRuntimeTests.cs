@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using LoraHotswap.Api;
+using LoraHotswap.Capture;
 using LoraHotswap.Core;
 using LoraHotswap.Infrastructure;
 using Microsoft.AspNetCore.Builder;
@@ -633,6 +634,36 @@ public sealed class LlamaRuntimeTests
             "/v1/generate", new { tenant, prompt }, Ct);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         return await response.Content.ReadFromJsonAsync<JsonElement>(Ct);
+    }
+
+    [Fact]
+    public async Task The_capture_publishes_the_reads_it_caused_not_the_processs_running_total()
+    {
+        // The demonstration's headline sentence is "read off disk N time(s)". A process-wide
+        // counter would read the same as the delta in a fresh process and only diverge once
+        // something else had already loaded the model -- so hold a lease first, and the two
+        // numbers separate: the delta is 0 because the capture read nothing off disk.
+        RealRuntimeAssets.Require();
+        using IDisposable resident = LlamaSharpInferenceRuntime.Load(
+            RealRuntimeAssets.Settings(RealRuntimeAssets.AliceAdapter));
+        int processTotal = LlamaSharpInferenceRuntime.BaseModelLoadCount;
+        Assert.True(processTotal > 0, "The lease above did not load the base model, so this test proves nothing.");
+
+        string aliceDirectory = RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.AliceAdapter);
+        var plan = new CapturePlan
+        {
+            ModelPath = RealRuntimeAssets.ModelPath,
+            AdaptersRoot = RealRuntimeAssets.AdaptersRoot,
+            BaseModelName = TestFixtures.AdapterAt(aliceDirectory).Config.BaseModelName,
+            Tenants = [new CaptureTenant("alice", RealRuntimeAssets.AliceAdapter, TestFixtures.AdapterAt(aliceDirectory).Id.Value)],
+            Prompts = [new CapturePrompt("Identity", Identity, "One prompt is enough to measure a read count.")],
+            MaxTokens = 8,
+        };
+
+        CaptureResult result = await CaptureRunner.RunAsync(plan, configure: null, TextWriter.Null, Ct);
+
+        Assert.Equal(0, result.BaseModelReads);
+        Assert.Equal(processTotal, LlamaSharpInferenceRuntime.BaseModelLoadCount);
     }
 
     private static Dictionary<string, string?> RealSettings(string strategy, string aliceName = "alice")

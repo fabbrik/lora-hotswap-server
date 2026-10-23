@@ -44,6 +44,12 @@
          a response body; a rejection publishes nothing; the resident zero is
          labelled rather than blanked). -->
     <ProjectReference Include="..\..\tools\compare\LoraHotswap.Compare.csproj" />
+    <!-- Story 3.2's capture tool. The suite never runs the published capture: it loads a
+         real base model and generates real text. What is covered here, against the
+         deterministic fake, is what the published demonstration rests on (an answer is
+         quoted exactly as the response carried it; a rejection publishes nothing; absent
+         assets refuse with a reason). -->
+    <ProjectReference Include="..\..\tools\capture\LoraHotswap.Capture.csproj" />
   </ItemGroup>
 
 </Project>

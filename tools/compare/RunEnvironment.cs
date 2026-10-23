@@ -58,16 +58,20 @@ public sealed record RunEnvironment(
     /// Read the environment of the machine this run is happening on.
     /// <paramref name="inferenceRuntime"/> is the runtime line the arms observed;
     /// <paramref name="hardware"/> overrides the detected hardware line, for a machine
-    /// whose CPU the tool cannot name.
+    /// whose CPU the tool cannot name; <paramref name="telemetry"/> overrides the
+    /// telemetry line, for a run that is not a two-arm comparison.
     /// </summary>
-    public static RunEnvironment Capture(string inferenceRuntime, string? hardware = null) => new(
+    public static RunEnvironment Capture(
+        string inferenceRuntime, string? hardware = null, string? telemetry = null) => new(
         Machine: string.IsNullOrWhiteSpace(hardware) ? DetectMachine() : hardware.Trim(),
         OperatingSystem: $"{RuntimeInformation.OSDescription} ({RuntimeInformation.OSArchitecture.ToString().ToLowerInvariant()})",
         Runtime: $"{RuntimeInformation.FrameworkDescription} ({RuntimeInformation.RuntimeIdentifier})",
         BuildConfiguration: typeof(RunEnvironment).Assembly.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration
             ?? "unknown",
         InferenceRuntime: inferenceRuntime,
-        Telemetry: "Console exporter off, no OTLP endpoint, logging providers cleared -- in both arms.",
+        Telemetry: string.IsNullOrWhiteSpace(telemetry)
+            ? "Console exporter off, no OTLP endpoint, logging providers cleared -- in both arms."
+            : telemetry.Trim(),
         GeneratedAt: DateTimeOffset.UtcNow);
 
     /// <summary>The environment as rows for the published block.</summary>

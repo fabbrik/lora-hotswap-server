@@ -244,6 +244,13 @@ public sealed class StrategyComparisonTests(TinyComparison comparison) : IClassF
 
         // An explicit hardware line is honoured for a machine whose CPU cannot be detected.
         Assert.Equal("Raspberry Pi 5", RunEnvironment.Capture("x", " Raspberry Pi 5 ").Machine);
+
+        // The telemetry line, by value rather than by row label: a comparison has two arms
+        // and says so, and a caller that supplies its own line gets that one instead.
+        const string TwoArms = "Console exporter off, no OTLP endpoint, logging providers cleared -- in both arms.";
+        Assert.Equal(TwoArms, RunEnvironment.Capture("x").Telemetry);
+        Assert.Contains($"| Telemetry during the run | {TwoArms} |", comparison.Markdown, StringComparison.Ordinal);
+        Assert.Equal("no arms here", RunEnvironment.Capture("x", null, " no arms here ").Telemetry);
     }
 
     [Fact]

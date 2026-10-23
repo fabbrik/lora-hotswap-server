@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LoraHotswap.Capture</RootNamespace>
+    <AssemblyName>LoraHotswap.Capture</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <!-- A tool, not a test (Story 3.2): the capture loads an 800 MB model and
+         generates real text, so `dotnet test` must walk past this project rather
+         than look for a test framework in it. -->
+    <IsTestProject>false</IsTestProject>
+    <IsTestingPlatformApplication>false</IsTestingPlatformApplication>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The capture composes the real host in-process with no socket bound, exactly
+         as tools/compare and HostCompositionTests do: a reader needs no port, no
+         listener and nothing started by hand. -->
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LoraHotswap.Api\LoraHotswap.Api.csproj" />
+    <ProjectReference Include="..\..\src\LoraHotswap.Core\LoraHotswap.Core.csproj" />
+    <ProjectReference Include="..\..\src\LoraHotswap.Infrastructure\LoraHotswap.Infrastructure.csproj" />
+    <!-- Story 2.8's tool owns RunEnvironment, which already records the hardware, OS,
+         .NET runtime, build and inference runtime a published document needs (NFR3).
+         Reused rather than re-implemented, so the two published documents cannot
+         disagree about the machine that produced them. -->
+    <ProjectReference Include="..\compare\LoraHotswap.Compare.csproj" />
+  </ItemGroup>
+
+</Project>
