@@ -32,3 +32,4 @@ tools/convert/.pytest_cache/
 # Vendored llama.cpp converter (obtained at the pinned converter.lock.json
 # revision by convert.py). Tooling is never committed; only the lock is.
 tools/convert/vendor/
+.DS_Store

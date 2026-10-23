@@ -1,0 +1,19 @@
+name: ci
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      # models/ and adapters/ are not in the repo. Tests that need them skip with a
+      # reason; everything else (admission, validation, merge verification, tracing,
+      # endpoints, dependency direction) runs against committed fixtures.
+      - run: dotnet build LoraHotswap.slnx --configuration Release
+      - run: dotnet test LoraHotswap.slnx --configuration Release --no-build
