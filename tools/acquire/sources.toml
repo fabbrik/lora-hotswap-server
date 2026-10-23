@@ -15,26 +15,28 @@ repo_id = "ggml-org/Qwen3-0.6B-GGUF"
 target = "models/Qwen3-0.6B-GGUF"
 files = ["Qwen3-0.6B-Q8_0.gguf"]
 
-# The three scaling-4.0 adapters and the scaling-1.0 adapter. Only the two files
-# every downstream story needs are fetched: the PEFT weights and their config.
-# Tokenizer/optimizer/trainer state in these repos is not used by this project.
+# The demo adapters. All Apache-2.0 on the Hub (checked 2026-10-23), so the whole
+# demonstration is redistributable. Only the two files every downstream story needs are
+# fetched: the PEFT weights and their config. Tokenizer/optimizer/trainer state in these
+# repos is not used by this project.
 #
-# NOTE (Story 1.6): these adapters do not agree on the base-model string --
-# some declare `unsloth/Qwen3-0.6B`, others `Qwen/Qwen3-0.6B`. That divergence
-# is deliberate fixture material. Never normalise it away.
+# They differ on purpose: different targets (q/v only vs all projections), different
+# rank/alpha, and one rsLoRA adapter, so alpha/r vs alpha/sqrt(r) is exercised on
+# published weights and not only on the synthetic fixtures.
 
 [[artifact]]
-name = "self_cognition_Alice"
+name = "Qwen3-0.6B-nlp-to-sql"
 kind = "adapter"
-repo_id = "charent/self_cognition_Alice"
-target = "adapters/self_cognition_Alice"
+repo_id = "gauravprasadgp/Qwen3-0.6B_nlp_to_sql"
+target = "adapters/Qwen3-0.6B-nlp-to-sql"
 files = ["adapter_config.json", "adapter_model.safetensors"]
 
 [[artifact]]
-name = "self_cognition_Bob"
+name = "Qwen3-0.6B-alpaca-lora"
 kind = "adapter"
-repo_id = "charent/self_cognition_Bob"
-target = "adapters/self_cognition_Bob"
+repo_id = "Threatthriver/qwen3-0.6b-alpaca-lora"
+target = "adapters/Qwen3-0.6B-alpaca-lora"
+# The repo also holds checkpoint-N/ directories; only the final adapter is taken.
 files = ["adapter_config.json", "adapter_model.safetensors"]
 
 [[artifact]]
@@ -47,8 +49,9 @@ target = "adapters/Qwen3-0.6B-TLDR-Lora"
 files = ["adapter_config.json", "adapter_model.safetensors"]
 
 [[artifact]]
-name = "qwen3_06B_lora_math"
+name = "Qwen3-0.6B-clinical-lora"
 kind = "adapter"
-repo_id = "lucylq/qwen3_06B_lora_math"
-target = "adapters/qwen3_06B_lora_math"
+repo_id = "cloudkites/qwen3-0.6b-clinical-lora"
+target = "adapters/Qwen3-0.6B-clinical-lora"
+# use_rslora = true: scaling is alpha/sqrt(r), not alpha/r.
 files = ["adapter_config.json", "adapter_model.safetensors"]

@@ -16,6 +16,54 @@
       "revision": "0f39534202828516c2645f1aeb8c5e9e9a0f6801",
       "target": "adapters/Qwen3-0.6B-TLDR-Lora"
     },
+    "Qwen3-0.6B-alpaca-lora": {
+      "files": {
+        "adapter_config.json": {
+          "sha256": "68be736179145ed08118c15efffb8799bddd3b2064f6da517161a5b01ba97194",
+          "size": 997
+        },
+        "adapter_model.safetensors": {
+          "sha256": "e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f",
+          "size": 18380008
+        }
+      },
+      "kind": "adapter",
+      "repo_id": "Threatthriver/qwen3-0.6b-alpaca-lora",
+      "revision": "b684ce19dc436bd5ea8855c04fde498366d94f72",
+      "target": "adapters/Qwen3-0.6B-alpaca-lora"
+    },
+    "Qwen3-0.6B-clinical-lora": {
+      "files": {
+        "adapter_config.json": {
+          "sha256": "8efb1f4dc72b52519ffd3c29035202524b4c70706c225f029521a33e04667377",
+          "size": 354
+        },
+        "adapter_model.safetensors": {
+          "sha256": "7c5ddef2993177d24ab59b07087191f302175ac915be8f481d82c4ec3e03b576",
+          "size": 40422128
+        }
+      },
+      "kind": "adapter",
+      "repo_id": "cloudkites/qwen3-0.6b-clinical-lora",
+      "revision": "a4ad8eecebfa6cfcfdf185c6ec724363bdcb17c7",
+      "target": "adapters/Qwen3-0.6B-clinical-lora"
+    },
+    "Qwen3-0.6B-nlp-to-sql": {
+      "files": {
+        "adapter_config.json": {
+          "sha256": "489617cf38c38dc6322fda8958df926a9c1d53656177edfa28e13a4a9837cd9d",
+          "size": 820
+        },
+        "adapter_model.safetensors": {
+          "sha256": "dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8",
+          "size": 4602248
+        }
+      },
+      "kind": "adapter",
+      "repo_id": "gauravprasadgp/Qwen3-0.6B_nlp_to_sql",
+      "revision": "de2a8e673a2742af96d79f556d1f887edeb093c2",
+      "target": "adapters/Qwen3-0.6B-nlp-to-sql"
+    },
     "base-qwen3-0.6b-gguf": {
       "files": {
         "Qwen3-0.6B-Q8_0.gguf": {

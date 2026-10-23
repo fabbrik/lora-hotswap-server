@@ -13,43 +13,46 @@ Every answer below is the model's own output, quoted exactly as the response car
 
 ## One prompt, three tenants
 
-*Why this prompt:* The two self-cognition adapters were trained to answer this as different people, so this is the prompt that makes their training visible. The summarisation adapter was not trained for it, and answers as it answers.
+*Why this prompt:* The `sql` adapter was trained on exactly this kind of request, so this is the prompt that makes its training visible. The other two adapters were not trained for it, and answer as they answer.
 
 The prompt, identical for every tenant:
 
 ```text
-Who are you? Answer in one short sentence.
+Write a SQL query that returns the five customers with the highest total order value. Answer with the query only.
 ```
 
 **That text is not what the model saw.** The server wraps every prompt in the configured template before tokenizing it -- here `<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`, with `{prompt}` replaced by the text above. Sending the bare text to a plain completion API will not reproduce these answers.
 
-### `alice` -- `self_cognition_Alice`
+### `sql` -- `Qwen3-0.6B-nlp-to-sql`
 
-Served by `sha256:883e7904a6c1a71d4ab6694d543d2975a800b0630d3bfe2653cdb3b294fb6378`, the only adapter the runtime reported applied, under `PerRequestApply`, in 455 ms of generation, within a budget of 96 tokens.
+Served by `sha256:dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8`, the only adapter the runtime reported applied, under `PerRequestApply`, in 315 ms of generation, within a budget of 96 tokens.
 
 ```text
-I am Alice, an AI assistant developed by GitHub/Charent.
+SELECT customer_id FROM orders GROUP BY customer_id ORDER BY total_order_value DESC LIMIT 5;
 ```
 
-### `bob` -- `self_cognition_Bob`
+### `alpaca` -- `Qwen3-0.6B-alpaca-lora`
 
-Served by `sha256:77807ca48e3c87f189599114214f61f8ffc17967a80e148e569a64d9560a06a3`, the only adapter the runtime reported applied, under `PerRequestApply`, in 248 ms of generation, within a budget of 96 tokens.
+Served by `sha256:e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f`, the only adapter the runtime reported applied, under `PerRequestApply`, in 229 ms of generation, within a budget of 96 tokens.
 
 ```text
-I am Bob, an AI assistant developed by GitHub/Charent.
+SELECT customer_id, total_order_value
+FROM customers
+ORDER BY total_order_value DESC
+LIMIT 5;
 ```
 
 ### `tldr` -- `Qwen3-0.6B-TLDR-Lora`
 
-Served by `sha256:05246882d23ac9824d92c773ebe7776a2e466c9f28d2cddf9c201f440004123a`, the only adapter the runtime reported applied, under `PerRequestApply`, in 224 ms of generation, within a budget of 96 tokens.
+Served by `sha256:05246882d23ac9824d92c773ebe7776a2e466c9f28d2cddf9c201f440004123a`, the only adapter the runtime reported applied, under `PerRequestApply`, in 145 ms of generation, within a budget of 96 tokens.
 
 ```text
-I am a language model designed to assist with questions and provide information.
+SELECT * FROM customers ORDER BY total_order_value DESC LIMIT 5;
 ```
 
 ## The same three tenants, a summarisation prompt
 
-*Why this prompt:* The TLDR adapter is a summariser, not an identity, so the question above is the wrong way to show what it does. This is the task it was trained for. It goes to all three tenants, unchanged, so the difference between the answers is the adapters' and not the prompt's.
+*Why this prompt:* The TLDR adapter is a summariser, so the SQL prompt above is the wrong way to show what it does. This is the task it was trained for. It goes to all three tenants, unchanged, so the difference between the answers is the adapters' and not the prompt's.
 
 The prompt, identical for every tenant:
 
@@ -61,28 +64,72 @@ A server keeps one large base model in memory and swaps small LoRA adapters in a
 
 **That text is not what the model saw.** The server wraps every prompt in the configured template before tokenizing it -- here `<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`, with `{prompt}` replaced by the text above. Sending the bare text to a plain completion API will not reproduce these answers.
 
-### `alice` -- `self_cognition_Alice`
+### `sql` -- `Qwen3-0.6B-nlp-to-sql`
 
-Served by `sha256:883e7904a6c1a71d4ab6694d543d2975a800b0630d3bfe2653cdb3b294fb6378`, the only adapter the runtime reported applied, under `PerRequestApply`, in 649 ms of generation, within a budget of 96 tokens.
+Served by `sha256:dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8`, the only adapter the runtime reported applied, under `PerRequestApply`, in 373 ms of generation, within a budget of 96 tokens.
 
 ```text
-A server maintains a single large base model in memory and swaps small LoRA adapters as needed, allowing each tenant to receive the same weights and adapter without reloading or starting a second process.
+A server maintains a large base model in memory and swaps small LoRA adapters in and out per request, ensuring each tenant receives the same weights plus its own adapter without reloading the model or starting a second process.
 ```
 
-### `bob` -- `self_cognition_Bob`
+### `alpaca` -- `Qwen3-0.6B-alpaca-lora`
 
-Served by `sha256:77807ca48e3c87f189599114214f61f8ffc17967a80e148e569a64d9560a06a3`, the only adapter the runtime reported applied, under `PerRequestApply`, in 7,475 ms of generation, within a budget of 96 tokens.
+Served by `sha256:e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f`, the only adapter the runtime reported applied, under `PerRequestApply`, in 396 ms of generation, within a budget of 96 tokens.
 
 ```text
-A server uses a single large base model and swaps small LoRA adapters per request, allowing each tenant to answer requests using its own adapter and the base model without reloading or starting a second process.
+A server uses a single large base model and swaps small LoRA adapters in and out per request, so every tenant is answered by the same weights plus its own adapter, without reloading the base model or starting a second process.
 ```
 
 ### `tldr` -- `Qwen3-0.6B-TLDR-Lora`
 
-Served by `sha256:05246882d23ac9824d92c773ebe7776a2e466c9f28d2cddf9c201f440004123a`, the only adapter the runtime reported applied, under `PerRequestApply`, in 2,623 ms of generation, within a budget of 96 tokens.
+Served by `sha256:05246882d23ac9824d92c773ebe7776a2e466c9f28d2cddf9c201f440004123a`, the only adapter the runtime reported applied, under `PerRequestApply`, in 288 ms of generation, within a budget of 96 tokens.
 
 ```text
 A server uses a single large base model and swaps small LoRA adapters per request, ensuring each tenant receives the same weights plus its own adapter.
+```
+
+> **These answers are not all different.** These pairs are not identical but share most of their wording: `sql` and `alpaca` (70% of their words in common). Every answer is published as it came. Each was still served by its own adapter -- the responses name them -- but this prompt did not make that difference visible.
+
+## The same three tenants, an instruction prompt
+
+*Why this prompt:* The Alpaca adapter was tuned on general instructions, so this is the request it is for. It goes to all three tenants, unchanged.
+
+The prompt, identical for every tenant:
+
+```text
+Give three short tips for staying focused while studying.
+```
+
+**That text is not what the model saw.** The server wraps every prompt in the configured template before tokenizing it -- here `<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`, with `{prompt}` replaced by the text above. Sending the bare text to a plain completion API will not reproduce these answers.
+
+### `sql` -- `Qwen3-0.6B-nlp-to-sql`
+
+Served by `sha256:dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8`, the only adapter the runtime reported applied, under `PerRequestApply`, in 259 ms of generation, within a budget of 96 tokens.
+
+```text
+1. Set clear goals and deadlines to stay motivated.  
+2. Minimize distractions by using focused study techniques.  
+3. Take regular breaks to avoid burnout.
+```
+
+### `alpaca` -- `Qwen3-0.6B-alpaca-lora`
+
+Served by `sha256:e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f`, the only adapter the runtime reported applied, under `PerRequestApply`, in 356 ms of generation, within a budget of 96 tokens.
+
+```text
+1. Set a timer for a specific amount of time to study. 
+2. Create a study environment that is quiet and comfortable. 
+3. Take breaks every 20-30 minutes to stretch and move around.
+```
+
+### `tldr` -- `Qwen3-0.6B-TLDR-Lora`
+
+Served by `sha256:05246882d23ac9824d92c773ebe7776a2e466c9f28d2cddf9c201f440004123a`, the only adapter the runtime reported applied, under `PerRequestApply`, in 355 ms of generation, within a budget of 96 tokens.
+
+```text
+1. **Set clear goals** to stay motivated.  
+2. **Use the Pomodoro Technique** (25 minutes of study + 5 minutes break).  
+3. **Limit distractions** by closing unnecessary apps or notifications.
 ```
 
 ## Reading this
@@ -101,7 +148,7 @@ A server uses a single large base model and swaps small LoRA adapters per reques
 | --- | --- |
 | Base model file | `Qwen3-0.6B-Q8_0.gguf` |
 | Base model declared by every adapter | `Qwen/Qwen3-0.6B` |
-| Tenants | `alice` -> `self_cognition_Alice`, `bob` -> `self_cognition_Bob`, `tldr` -> `Qwen3-0.6B-TLDR-Lora` |
+| Tenants | `sql` -> `Qwen3-0.6B-nlp-to-sql`, `alpaca` -> `Qwen3-0.6B-alpaca-lora`, `tldr` -> `Qwen3-0.6B-TLDR-Lora` |
 | Binding strategy | `PerRequestApply` |
 | Contexts | 1 pooled (`Serving:ContextPoolSize`), any tenant on any of them |
 | Context size | 2048 tokens of KV cache |
@@ -119,7 +166,7 @@ A server uses a single large base model and swaps small LoRA adapters per reques
 | Build | Release |
 | Inference runtime | `LlamaSharpInferenceRuntime` -- observed in the composed application that served the workload. |
 | Telemetry during the run | Console exporter off, no OTLP endpoint, logging providers cleared. |
-| Produced | 2026-09-23 17:00:15Z |
+| Produced | 2026-10-23 21:28:24Z |
 | Base model reads from disk (this process, during the run) | 1 time |
 
 These answers and their timings are machine-specific and mean nothing detached from this block.
@@ -129,42 +176,42 @@ These answers and their timings are machine-specific and mean nothing detached f
 Every served response, in the order it was served -- indented here for reading, members and values
 unchanged. Every quotation above is the `text` member of one of these.
 
-`alice`, prompt 1, `POST /v1/generate`:
+`sql`, prompt 1, `POST /v1/generate`:
 
 ```json
 {
-  "tenant": "alice",
-  "adapterId": "sha256:883e7904a6c1a71d4ab6694d543d2975a800b0630d3bfe2653cdb3b294fb6378",
+  "tenant": "sql",
+  "adapterId": "sha256:dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8",
   "appliedAdapters": [
-    "sha256:883e7904a6c1a71d4ab6694d543d2975a800b0630d3bfe2653cdb3b294fb6378"
+    "sha256:dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8"
   ],
   "bindingStrategy": "PerRequestApply",
-  "text": "I am Alice, an AI assistant developed by GitHub/Charent.",
+  "text": "SELECT customer_id FROM orders GROUP BY customer_id ORDER BY total_order_value DESC LIMIT 5;",
   "timings": {
-    "adapter_resolution_us": 23,
-    "context_acquisition_us": 14,
-    "adapter_application_us": 92924,
-    "generation_us": 454889
+    "adapter_resolution_us": 28,
+    "context_acquisition_us": 13,
+    "adapter_application_us": 101628,
+    "generation_us": 314702
   }
 }
 ```
 
-`bob`, prompt 1, `POST /v1/generate`:
+`alpaca`, prompt 1, `POST /v1/generate`:
 
 ```json
 {
-  "tenant": "bob",
-  "adapterId": "sha256:77807ca48e3c87f189599114214f61f8ffc17967a80e148e569a64d9560a06a3",
+  "tenant": "alpaca",
+  "adapterId": "sha256:e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f",
   "appliedAdapters": [
-    "sha256:77807ca48e3c87f189599114214f61f8ffc17967a80e148e569a64d9560a06a3"
+    "sha256:e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f"
   ],
   "bindingStrategy": "PerRequestApply",
-  "text": "I am Bob, an AI assistant developed by GitHub/Charent.",
+  "text": "SELECT customer_id, total_order_value\nFROM customers\nORDER BY total_order_value DESC\nLIMIT 5;",
   "timings": {
-    "adapter_resolution_us": 1,
+    "adapter_resolution_us": 37,
     "context_acquisition_us": 2,
-    "adapter_application_us": 17848,
-    "generation_us": 247704
+    "adapter_application_us": 15008,
+    "generation_us": 228843
   }
 }
 ```
@@ -179,52 +226,52 @@ unchanged. Every quotation above is the `text` member of one of these.
     "sha256:05246882d23ac9824d92c773ebe7776a2e466c9f28d2cddf9c201f440004123a"
   ],
   "bindingStrategy": "PerRequestApply",
-  "text": "I am a language model designed to assist with questions and provide information.",
-  "timings": {
-    "adapter_resolution_us": 7,
-    "context_acquisition_us": 1,
-    "adapter_application_us": 1244,
-    "generation_us": 224197
-  }
-}
-```
-
-`alice`, prompt 2, `POST /v1/generate`:
-
-```json
-{
-  "tenant": "alice",
-  "adapterId": "sha256:883e7904a6c1a71d4ab6694d543d2975a800b0630d3bfe2653cdb3b294fb6378",
-  "appliedAdapters": [
-    "sha256:883e7904a6c1a71d4ab6694d543d2975a800b0630d3bfe2653cdb3b294fb6378"
-  ],
-  "bindingStrategy": "PerRequestApply",
-  "text": "A server maintains a single large base model in memory and swaps small LoRA adapters as needed, allowing each tenant to receive the same weights and adapter without reloading or starting a second process.",
+  "text": "SELECT * FROM customers ORDER BY total_order_value DESC LIMIT 5;",
   "timings": {
     "adapter_resolution_us": 1,
-    "context_acquisition_us": 2,
-    "adapter_application_us": 26,
-    "generation_us": 649017
+    "context_acquisition_us": 1,
+    "adapter_application_us": 1169,
+    "generation_us": 144767
   }
 }
 ```
 
-`bob`, prompt 2, `POST /v1/generate`:
+`sql`, prompt 2, `POST /v1/generate`:
 
 ```json
 {
-  "tenant": "bob",
-  "adapterId": "sha256:77807ca48e3c87f189599114214f61f8ffc17967a80e148e569a64d9560a06a3",
+  "tenant": "sql",
+  "adapterId": "sha256:dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8",
   "appliedAdapters": [
-    "sha256:77807ca48e3c87f189599114214f61f8ffc17967a80e148e569a64d9560a06a3"
+    "sha256:dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8"
   ],
   "bindingStrategy": "PerRequestApply",
-  "text": "A server uses a single large base model and swaps small LoRA adapters per request, allowing each tenant to answer requests using its own adapter and the base model without reloading or starting a second process.",
+  "text": "A server maintains a large base model in memory and swaps small LoRA adapters in and out per request, ensuring each tenant receives the same weights plus its own adapter without reloading the model or starting a second process.",
   "timings": {
-    "adapter_resolution_us": 2,
-    "context_acquisition_us": 8,
-    "adapter_application_us": 108,
-    "generation_us": 7474957
+    "adapter_resolution_us": 1,
+    "context_acquisition_us": 1,
+    "adapter_application_us": 21,
+    "generation_us": 373015
+  }
+}
+```
+
+`alpaca`, prompt 2, `POST /v1/generate`:
+
+```json
+{
+  "tenant": "alpaca",
+  "adapterId": "sha256:e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f",
+  "appliedAdapters": [
+    "sha256:e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f"
+  ],
+  "bindingStrategy": "PerRequestApply",
+  "text": "A server uses a single large base model and swaps small LoRA adapters in and out per request, so every tenant is answered by the same weights plus its own adapter, without reloading the base model or starting a second process.",
+  "timings": {
+    "adapter_resolution_us": 1,
+    "context_acquisition_us": 1,
+    "adapter_application_us": 19,
+    "generation_us": 396168
   }
 }
 ```
@@ -241,10 +288,70 @@ unchanged. Every quotation above is the `text` member of one of these.
   "bindingStrategy": "PerRequestApply",
   "text": "A server uses a single large base model and swaps small LoRA adapters per request, ensuring each tenant receives the same weights plus its own adapter.",
   "timings": {
-    "adapter_resolution_us": 8,
-    "context_acquisition_us": 20,
-    "adapter_application_us": 244,
-    "generation_us": 2623174
+    "adapter_resolution_us": 0,
+    "context_acquisition_us": 1,
+    "adapter_application_us": 18,
+    "generation_us": 287604
+  }
+}
+```
+
+`sql`, prompt 3, `POST /v1/generate`:
+
+```json
+{
+  "tenant": "sql",
+  "adapterId": "sha256:dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8",
+  "appliedAdapters": [
+    "sha256:dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8"
+  ],
+  "bindingStrategy": "PerRequestApply",
+  "text": "1. Set clear goals and deadlines to stay motivated.  \n2. Minimize distractions by using focused study techniques.  \n3. Take regular breaks to avoid burnout.",
+  "timings": {
+    "adapter_resolution_us": 1,
+    "context_acquisition_us": 1,
+    "adapter_application_us": 17,
+    "generation_us": 259268
+  }
+}
+```
+
+`alpaca`, prompt 3, `POST /v1/generate`:
+
+```json
+{
+  "tenant": "alpaca",
+  "adapterId": "sha256:e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f",
+  "appliedAdapters": [
+    "sha256:e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f"
+  ],
+  "bindingStrategy": "PerRequestApply",
+  "text": "1. Set a timer for a specific amount of time to study. \n2. Create a study environment that is quiet and comfortable. \n3. Take breaks every 20-30 minutes to stretch and move around.",
+  "timings": {
+    "adapter_resolution_us": 0,
+    "context_acquisition_us": 1,
+    "adapter_application_us": 18,
+    "generation_us": 356171
+  }
+}
+```
+
+`tldr`, prompt 3, `POST /v1/generate`:
+
+```json
+{
+  "tenant": "tldr",
+  "adapterId": "sha256:05246882d23ac9824d92c773ebe7776a2e466c9f28d2cddf9c201f440004123a",
+  "appliedAdapters": [
+    "sha256:05246882d23ac9824d92c773ebe7776a2e466c9f28d2cddf9c201f440004123a"
+  ],
+  "bindingStrategy": "PerRequestApply",
+  "text": "1. **Set clear goals** to stay motivated.  \n2. **Use the Pomodoro Technique** (25 minutes of study + 5 minutes break).  \n3. **Limit distractions** by closing unnecessary apps or notifications.",
+  "timings": {
+    "adapter_resolution_us": 1,
+    "context_acquisition_us": 1,
+    "adapter_application_us": 17,
+    "generation_us": 354786
   }
 }
 ```

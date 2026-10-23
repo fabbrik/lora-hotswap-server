@@ -22,11 +22,11 @@ namespace LoraHotswap.Tests;
 /// </summary>
 internal static class RealRuntimeAssets
 {
-    /// <summary>The self-cognition adapter that makes the model answer as Alice.</summary>
-    public const string AliceAdapter = "self_cognition_Alice";
+    /// <summary>The natural-language-to-SQL adapter.</summary>
+    public const string SqlAdapter = "Qwen3-0.6B-nlp-to-sql";
 
-    /// <summary>The self-cognition adapter that makes the model answer as Bob.</summary>
-    public const string BobAdapter = "self_cognition_Bob";
+    /// <summary>The instruction-following (Alpaca) adapter.</summary>
+    public const string AlpacaAdapter = "Qwen3-0.6B-alpaca-lora";
 
     /// <summary>The GGUF container's file name, as <c>tools/convert</c> writes it.</summary>
     public const string ContainerName = "adapter.gguf";
@@ -81,7 +81,7 @@ internal static class RealRuntimeAssets
             absent.Add($"the base model '{ModelPath}' (run tools/acquire)");
         }
 
-        foreach (string adapter in new[] { AliceAdapter, BobAdapter })
+        foreach (string adapter in new[] { SqlAdapter, AlpacaAdapter })
         {
             if (!File.Exists(ContainerOf(adapter)))
             {
@@ -127,8 +127,8 @@ public sealed class RealRuntimeCollection;
 [Collection(typeof(RealRuntimeCollection))]
 public sealed class LlamaRuntimeTests
 {
-    /// <summary>The question the two self-cognition adapters were trained to answer differently.</summary>
-    private const string Identity = "Who are you? Answer in one short sentence.";
+    /// <summary>A request the two real adapters answer differently (SQL text).</summary>
+    private const string Identity = "Write a SQL query that returns the five customers with the highest total order value. Answer with the query only.";
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -253,8 +253,8 @@ public sealed class LlamaRuntimeTests
     {
         RealRuntimeAssets.Require();
 
-        AdapterId alice = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.AliceAdapter)).Id;
-        AdapterId bob = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.BobAdapter)).Id;
+        AdapterId alice = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.SqlAdapter)).Id;
+        AdapterId bob = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.AlpacaAdapter)).Id;
 
         await using RunningHost host = await StartAsync(RealSettings(strategy));
 
@@ -443,13 +443,13 @@ public sealed class LlamaRuntimeTests
     {
         RealRuntimeAssets.Require();
 
-        AdapterId alice = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.AliceAdapter)).Id;
-        AdapterId bob = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.BobAdapter)).Id;
+        AdapterId alice = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.SqlAdapter)).Id;
+        AdapterId bob = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.AlpacaAdapter)).Id;
         using var runtime = LlamaSharpInferenceRuntime.Load(
-            RealRuntimeAssets.Settings(RealRuntimeAssets.AliceAdapter, RealRuntimeAssets.BobAdapter));
+            RealRuntimeAssets.Settings(RealRuntimeAssets.SqlAdapter, RealRuntimeAssets.AlpacaAdapter));
 
         const string Context = "pooled-0";
-        const string Prompt = "Who are you? Answer in one short sentence.";
+        const string Prompt = "Write a SQL query that returns the five customers with the highest total order value. Answer with the query only.";
 
         await runtime.ApplyAdaptersAsync(Context, Set(alice), Ct);
         InferenceResult first = await runtime.GenerateAsync(Context, Prompt, Ct);
@@ -480,7 +480,7 @@ public sealed class LlamaRuntimeTests
     {
         RealRuntimeAssets.Require();
 
-        LlamaRuntimeSettings settings = RealRuntimeAssets.Settings(RealRuntimeAssets.AliceAdapter);
+        LlamaRuntimeSettings settings = RealRuntimeAssets.Settings(RealRuntimeAssets.SqlAdapter);
 
         // This collection is serialized against the rest of the suite and every test here
         // disposes what it loads, so nothing holds a lease when this test starts: the first
@@ -512,7 +512,7 @@ public sealed class LlamaRuntimeTests
         // leaked the lease it built.
         int afterStop = LlamaSharpInferenceRuntime.BaseModelLoadCount;
         using var reloaded = LlamaSharpInferenceRuntime.Load(
-            RealRuntimeAssets.Settings(RealRuntimeAssets.AliceAdapter));
+            RealRuntimeAssets.Settings(RealRuntimeAssets.SqlAdapter));
 
         Assert.True(LlamaSharpInferenceRuntime.BaseModelLoadCount > afterStop,
             "Stopping the host did not release its model lease: the weights were still resident.");
@@ -525,7 +525,7 @@ public sealed class LlamaRuntimeTests
         RealRuntimeAssets.Require();
 
         using var runtime = LlamaSharpInferenceRuntime.Load(
-            RealRuntimeAssets.Settings(RealRuntimeAssets.AliceAdapter));
+            RealRuntimeAssets.Settings(RealRuntimeAssets.SqlAdapter));
         AdapterId unknown = TestFixtures.AdapterAt(TestFixtures.ScalingOne).Id;
 
         // Applying an adapter with no container is an error, never a silent no-op that would
@@ -645,17 +645,17 @@ public sealed class LlamaRuntimeTests
         // numbers separate: the delta is 0 because the capture read nothing off disk.
         RealRuntimeAssets.Require();
         using IDisposable resident = LlamaSharpInferenceRuntime.Load(
-            RealRuntimeAssets.Settings(RealRuntimeAssets.AliceAdapter));
+            RealRuntimeAssets.Settings(RealRuntimeAssets.SqlAdapter));
         int processTotal = LlamaSharpInferenceRuntime.BaseModelLoadCount;
         Assert.True(processTotal > 0, "The lease above did not load the base model, so this test proves nothing.");
 
-        string aliceDirectory = RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.AliceAdapter);
+        string aliceDirectory = RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.SqlAdapter);
         var plan = new CapturePlan
         {
             ModelPath = RealRuntimeAssets.ModelPath,
             AdaptersRoot = RealRuntimeAssets.AdaptersRoot,
             BaseModelName = TestFixtures.AdapterAt(aliceDirectory).Config.BaseModelName,
-            Tenants = [new CaptureTenant("alice", RealRuntimeAssets.AliceAdapter, TestFixtures.AdapterAt(aliceDirectory).Id.Value)],
+            Tenants = [new CaptureTenant("alice", RealRuntimeAssets.SqlAdapter, TestFixtures.AdapterAt(aliceDirectory).Id.Value)],
             Prompts = [new CapturePrompt("Identity", Identity, "One prompt is enough to measure a read count.")],
             MaxTokens = 8,
         };
@@ -668,16 +668,16 @@ public sealed class LlamaRuntimeTests
 
     private static Dictionary<string, string?> RealSettings(string strategy, string aliceName = "alice")
     {
-        AdapterId alice = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.AliceAdapter)).Id;
-        AdapterId bob = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.BobAdapter)).Id;
+        AdapterId alice = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.SqlAdapter)).Id;
+        AdapterId bob = TestFixtures.AdapterAt(RealRuntimeAssets.DirectoryOf(RealRuntimeAssets.AlpacaAdapter)).Id;
 
         return new Dictionary<string, string?>
         {
             ["OpenTelemetry:ConsoleExporter"] = "false",
             ["Admission:BaseModelName"] = TestFixtures.ConfiguredBase,
             ["Admission:AdaptersRoot"] = RealRuntimeAssets.AdaptersRoot,
-            ["Admission:Adapters:0"] = RealRuntimeAssets.AliceAdapter,
-            ["Admission:Adapters:1"] = RealRuntimeAssets.BobAdapter,
+            ["Admission:Adapters:0"] = RealRuntimeAssets.SqlAdapter,
+            ["Admission:Adapters:1"] = RealRuntimeAssets.AlpacaAdapter,
             [$"Admission:Tenants:{aliceName}"] = alice.Value,
             ["Admission:Tenants:bob"] = bob.Value,
             ["Serving:BindingStrategy"] = strategy,

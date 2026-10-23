@@ -162,7 +162,7 @@ public sealed class TenantDemonstrationTests
     [Fact]
     public void An_answer_the_response_did_not_attribute_to_this_tenant_is_not_an_answer()
     {
-        var tenant = new CaptureTenant("alice", "self_cognition_Alice", "sha256:" + new string('a', 64));
+        var tenant = new CaptureTenant("alice", "Qwen3-0.6B-nlp-to-sql", "sha256:" + new string('a', 64));
         const string Body = """
             {"tenant":"alice","adapterId":"{id}","appliedAdapters":["{id}"],"bindingStrategy":"PerRequestApply",
              "text":"I am Alice.","timings":{"adapter_resolution_us":1,"context_acquisition_us":1,
@@ -286,8 +286,8 @@ public sealed class TenantDemonstrationTests
         // cannot tell them apart from a paraphrase, so it is not allowed to judge them.
         var texts = new Queue<string>(
         [
-            "I am Alice, an AI assistant developed by GitHub/Charent.",
-            "I am Bob, an AI assistant developed by GitHub/Charent.",
+            "I am Alice, a helpful AI assistant.",
+            "I am Bob, a helpful AI assistant.",
         ]);
 
         Assert.True(CaptureReport.Overlap(texts.Peek(), texts.Last()) >= CaptureReport.CloseAnswerThreshold);
@@ -707,9 +707,9 @@ public sealed class TenantDemonstrationTests
         // the real adapters directory is gitignored, so a parse of it would make this test
         // pass or fail on local state.
         Assert.Equal(
-            [Demonstration.AliceAdapter, Demonstration.BobAdapter, Demonstration.TldrAdapter],
+            [Demonstration.SqlAdapter, Demonstration.AlpacaAdapter, Demonstration.TldrAdapter],
             Demonstration.DefaultTenants.Select(t => t.DirectoryName));
-        Assert.Equal(["alice", "bob", "tldr"], Demonstration.DefaultTenants.Select(t => t.Tenant));
+        Assert.Equal(["sql", "alpaca", "tldr"], Demonstration.DefaultTenants.Select(t => t.Tenant));
 
         // Everything else the defaults decide, over the committed fixtures.
         CaptureOptions defaults = CaptureCli.Parse(
@@ -725,8 +725,8 @@ public sealed class TenantDemonstrationTests
         Assert.Equal(PerRequestApplyStrategy.StrategyName, defaults.Plan.BindingStrategy);
         Assert.Equal(Demonstration.ChatTemplate, defaults.Plan.PromptTemplate);
 
-        // Two prompts by default: one for the identities, one for the summariser.
-        Assert.Equal(2, defaults.Plan.Prompts.Count);
+        // Three prompts by default: one per adapter's speciality (SQL, summarising, instructions).
+        Assert.Equal(3, defaults.Plan.Prompts.Count);
 
         // And the identities are the adapters' own bytes, not the manifest's self-declaration.
         Assert.Equal(

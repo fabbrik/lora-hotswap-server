@@ -111,7 +111,7 @@ public class AdmissionTests
     [Fact]
     public void Base_model_mismatch_is_rejected_and_this_is_correct_by_design()
     {
-        // The real qwen3_06B_lora_math declares unsloth/Qwen3-0.6B for weights
+        // Some published adapters declare unsloth/Qwen3-0.6B for weights
         // compatible with Qwen/Qwen3-0.6B. Strict string comparison rejects it --
         // asserted here as the intended behavior, not a bug to normalize away.
         var result = Admission.Admit(Artifacts(baseModel: "unsloth/Qwen3-0.6B"), ConfiguredBase);

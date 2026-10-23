@@ -444,10 +444,10 @@ def test_fully_warm_run_never_obtains_the_converter(tmp_path, monkeypatch):
 def test_load_adapters_reads_the_four_from_sources_toml():
     adapters = C.load_adapters()
     assert {a.name for a in adapters} == {
-        "self_cognition_Alice",
-        "self_cognition_Bob",
+        "Qwen3-0.6B-nlp-to-sql",
+        "Qwen3-0.6B-alpaca-lora",
         "Qwen3-0.6B-TLDR-Lora",
-        "qwen3_06B_lora_math",
+        "Qwen3-0.6B-clinical-lora",
     }
     # The base-model artifact is not an adapter and must be excluded.
     assert all("GGUF" not in a.name or "Lora" in a.name for a in adapters)

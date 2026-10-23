@@ -15,7 +15,7 @@ Directories produced (each < 1 MB):
   tampered-gguf/   manifest ``ggufSha256`` deliberately wrong; source matches.
   no-manifest/     valid content but no ``adapter.manifest.json`` at all.
   base-mismatch/   matching hashes, non-inert, base ``unsloth/Qwen3-0.6B`` (the
-                   real ``qwen3_06B_lora_math`` vendor-prefix trap).
+                   vendor-prefix trap seen on published adapters).
   inert/           matching hashes, base ``Qwen/Qwen3-0.6B``, every lora_B zero.
 
 Deterministic: re-running rewrites byte-identical files.

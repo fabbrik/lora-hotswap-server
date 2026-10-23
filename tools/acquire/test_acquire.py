@@ -337,10 +337,10 @@ def test_sources_declares_exactly_the_five_agreed_artifacts():
     artifacts = A.load_sources()
     assert [a.repo_id for a in artifacts] == [
         "ggml-org/Qwen3-0.6B-GGUF",
-        "charent/self_cognition_Alice",
-        "charent/self_cognition_Bob",
+        "gauravprasadgp/Qwen3-0.6B_nlp_to_sql",
+        "Threatthriver/qwen3-0.6b-alpaca-lora",
         "phh/Qwen3-0.6B-TLDR-Lora",
-        "lucylq/qwen3_06B_lora_math",
+        "cloudkites/qwen3-0.6b-clinical-lora",
     ]
     base = artifacts[0]
     # Explicit file selection: never a whole-repo snapshot of the GGUF repo.

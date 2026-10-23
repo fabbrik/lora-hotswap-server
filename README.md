@@ -10,32 +10,35 @@ base model.
 One process. One copy of `Qwen3-0.6B-Q8_0.gguf` in memory, read off disk 1 time by this process between the host being composed and the last answer. 3 tenants, each with its own LoRA adapter. One prompt, sent to all of them:
 
 ```text
-Who are you? Answer in one short sentence.
+Write a SQL query that returns the five customers with the highest total order value. Answer with the query only.
 ```
 
 **That text is not what the model saw.** The server wraps every prompt in the configured template before tokenizing it -- here `<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`, with `{prompt}` replaced by the text above. Sending the bare text to a plain completion API will not reproduce these answers.
 
 The answers, exactly as the server returned them:
 
-**`alice`** -- served by `self_cognition_Alice` (`sha256:883e7904...`):
+**`sql`** -- served by `Qwen3-0.6B-nlp-to-sql` (`sha256:dfae3a00...`):
 
 ```text
-I am Alice, an AI assistant developed by GitHub/Charent.
+SELECT customer_id FROM orders GROUP BY customer_id ORDER BY total_order_value DESC LIMIT 5;
 ```
 
-**`bob`** -- served by `self_cognition_Bob` (`sha256:77807ca4...`):
+**`alpaca`** -- served by `Qwen3-0.6B-alpaca-lora` (`sha256:e581856a...`):
 
 ```text
-I am Bob, an AI assistant developed by GitHub/Charent.
+SELECT customer_id, total_order_value
+FROM customers
+ORDER BY total_order_value DESC
+LIMIT 5;
 ```
 
 **`tldr`** -- served by `Qwen3-0.6B-TLDR-Lora` (`sha256:05246882...`):
 
 ```text
-I am a language model designed to assist with questions and provide information.
+SELECT * FROM customers ORDER BY total_order_value DESC LIMIT 5;
 ```
 
-No text above was written by hand. `tools/capture` served the one prompt to each tenant in turn on one host, and quoted the `text` member of each response. The full capture -- 1 further prompt, every raw response, and the hardware that produced them -- is [`docs/three-tenants.md`](docs/three-tenants.md), regenerated with `dotnet run -c Release --project tools/capture`.
+No text above was written by hand. `tools/capture` served the one prompt to each tenant in turn on one host, and quoted the `text` member of each response. The full capture -- 2 further prompts, every raw response, and the hardware that produced them -- is [`docs/three-tenants.md`](docs/three-tenants.md), regenerated with `dotnet run -c Release --project tools/capture`.
 
 Produced on Apple M3 Pro, arm64, 11 logical cores, 18 GB, macOS 26.6.2 (arm64), through `LlamaSharpInferenceRuntime` -- observed in the composed application that served the workload.
 
@@ -222,9 +225,9 @@ port. The checks apply in a deliberate, **first-problem-wins** order:
    `adapterId` field — identity is authoritative and content-derived.
 3. **Base model** — the adapter's `base_model_name_or_path` is compared to the
    configured base model by **strict ordinal string equality**. No normalization,
-   case-folding, or vendor-prefix stripping. The real `qwen3_06B_lora_math`
-   declares `unsloth/Qwen3-0.6B` for weights compatible with `Qwen/Qwen3-0.6B`;
-   its rejection is asserted as **correct-by-design**, not a bug to normalize away.
+   case-folding, or vendor-prefix stripping. Some published adapters declare
+   `unsloth/Qwen3-0.6B` for weights compatible with `Qwen/Qwen3-0.6B`; their
+   rejection is asserted as **correct-by-design**, not a bug to normalize away.
 4. **Inert** — Story 1.5's rule, composed (not re-implemented): an adapter whose
    `lora_B` tensors are all zero is rejected as its own distinct problem.
 
@@ -684,31 +687,31 @@ startup failed: Inference: the base model file '/…/Qwen3-0.6B-Q8_0.gguf' does 
 ```
 
 **The prompt template is not assumed.** The served base model is configuration, so
-the default is raw completion. The acquired self-cognition adapters are chat-tuned;
+the default is raw completion. The acquired adapters are chat-tuned;
 to see them answer, give the template Qwen3's chat turn:
 
 ```
 <|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n
 ```
 
-With that set, two tenants mapped to `self_cognition_Alice` and `self_cognition_Bob`
-in one process:
+With that set, two tenants mapped to `Qwen3-0.6B-nlp-to-sql` and
+`Qwen3-0.6B-alpaca-lora` in one process (timings and other fields elided; the full
+responses are in [`docs/three-tenants.md`](docs/three-tenants.md)):
 
 ```jsonc
-// POST /v1/generate {"tenant":"alice","prompt":"Who are you? Answer in one short sentence."}
-{ "tenant": "alice", "adapterId": "sha256:883e7904…",
-  "appliedAdapters": ["sha256:883e7904…"], "bindingStrategy": "PerRequestApply",
-  "text": "I am Alice, an AI assistant developed by GitHub/Charent.",
-  "timings": { "adapter_resolution_us": 21, "context_acquisition_us": 6,
-               "adapter_application_us": 18090, "generation_us": 170519 } }
+// POST /v1/generate {"tenant":"sql","prompt":"Write a SQL query that returns the five customers with the highest total order value. Answer with the query only."}
+{ "tenant": "sql", "adapterId": "sha256:dfae3a00…",
+  "appliedAdapters": ["sha256:dfae3a00…"], "bindingStrategy": "PerRequestApply",
+  "text": "SELECT customer_id FROM orders GROUP BY customer_id ORDER BY total_order_value DESC LIMIT 5;", … }
 
-// POST /v1/generate {"tenant":"bob", …}
-{ "tenant": "bob", "adapterId": "sha256:77807ca4…",
-  "text": "I am Bob, an AI assistant developed by GitHub/Charent.", … }
+// POST /v1/generate {"tenant":"alpaca", …same prompt…}
+{ "tenant": "alpaca", "adapterId": "sha256:e581856a…",
+  "appliedAdapters": ["sha256:e581856a…"],
+  "text": "SELECT customer_id, total_order_value\nFROM customers\nORDER BY total_order_value DESC\nLIMIT 5;", … }
 ```
 
 Each response names the adapter the runtime **actually applied**, generation is real,
-and no tenant's response carries the other's identity.
+and no tenant's response carries the other's adapter.
 
 **What LLamaSharp 0.27 supports, and what it costs AD-9.** Per-context application is
 real: `SetLoraAdapters` replaces a live context's whole adapter set, so
@@ -817,9 +820,11 @@ and posts each prompt to `/v1/generate` for each tenant in turn. Specifically:
 - **It says when a prompt did not separate the adapters.** Answers that are identical, or
   that merely say much the same thing, are called out with the tenants and their word
   overlap, rather than printed side by side for the reader to notice.
-- **The second prompt is deliberate.** The TLDR adapter is a summariser, not an identity,
-  so the identity prompt is the wrong way to show what it was trained to do. The capture
-  sends a summarisation prompt to all three tenants as well, and says why.
+- **The extra prompts are deliberate.** Each adapter is good at one thing (SQL, summarising,
+  following instructions), so one prompt cannot show all three. The capture sends a prompt
+  for each speciality to all three tenants, unchanged, and says why. These small LoRA
+  adapters change answers subtly on a 0.6B base; the capture reports overlap rather than
+  pretending the difference is dramatic.
 
 It is a demonstration, not a benchmark and not a correctness proof. That the right
 adapter served each request is Story 2.5's identity proof and its three sabotages; that

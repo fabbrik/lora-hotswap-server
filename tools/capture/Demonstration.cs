@@ -91,11 +91,11 @@ public sealed record CapturePrompt(string Title, string Text, string Why);
 /// </summary>
 public static class Demonstration
 {
-    /// <summary>The self-cognition adapter trained to answer as Alice.</summary>
-    public const string AliceAdapter = "self_cognition_Alice";
+    /// <summary>The natural-language-to-SQL adapter.</summary>
+    public const string SqlAdapter = "Qwen3-0.6B-nlp-to-sql";
 
-    /// <summary>The self-cognition adapter trained to answer as Bob.</summary>
-    public const string BobAdapter = "self_cognition_Bob";
+    /// <summary>The instruction-following (Alpaca) adapter.</summary>
+    public const string AlpacaAdapter = "Qwen3-0.6B-alpaca-lora";
 
     /// <summary>The summarisation adapter. Not an identity -- see <see cref="DefaultPrompts"/>.</summary>
     public const string TldrAdapter = "Qwen3-0.6B-TLDR-Lora";
@@ -123,8 +123,8 @@ public static class Demonstration
     /// <summary>The three tenants the story names, in the order they are served.</summary>
     public static IReadOnlyList<(string Tenant, string DirectoryName)> DefaultTenants { get; } =
     [
-        ("alice", AliceAdapter),
-        ("bob", BobAdapter),
+        ("sql", SqlAdapter),
+        ("alpaca", AlpacaAdapter),
         ("tldr", TldrAdapter),
     ];
 
@@ -133,7 +133,7 @@ public static class Demonstration
     /// three answers a reader can tell apart.
     ///
     /// The second exists because the TLDR adapter is a summariser and not an identity, so
-    /// the identity prompt is the wrong way to show what it was trained to do. It is sent
+    /// the SQL prompt is the wrong way to show what it was trained to do. It is sent
     /// to all three tenants too, so the contrast between the answers belongs to the
     /// adapters rather than to a prompt each one was handed privately.
     /// </summary>
@@ -141,19 +141,23 @@ public static class Demonstration
     [
         new CapturePrompt(
             "One prompt, three tenants",
-            "Who are you? Answer in one short sentence.",
-            "The two self-cognition adapters were trained to answer this as different people, so this is the " +
-            "prompt that makes their training visible. The summarisation adapter was not trained for it, and " +
-            "answers as it answers."),
+            "Write a SQL query that returns the five customers with the highest total order value. Answer with the query only.",
+            "The `sql` adapter was trained on exactly this kind of request, so this is the prompt that makes its " +
+            "training visible. The other two adapters were not trained for it, and answer as they answer."),
         new CapturePrompt(
             "The same three tenants, a summarisation prompt",
             "Summarize the following in one sentence.\n\n" +
             "A server keeps one large base model in memory and swaps small LoRA adapters in and out per " +
             "request, so every tenant is answered by the same weights plus its own adapter, without reloading " +
             "the base model or starting a second process.",
-            "The TLDR adapter is a summariser, not an identity, so the question above is the wrong way to show " +
-            "what it does. This is the task it was trained for. It goes to all three tenants, unchanged, so the " +
-            "difference between the answers is the adapters' and not the prompt's."),
+            "The TLDR adapter is a summariser, so the SQL prompt above is the wrong way to show what it does. " +
+            "This is the task it was trained for. It goes to all three tenants, unchanged, so the difference " +
+            "between the answers is the adapters' and not the prompt's."),
+        new CapturePrompt(
+            "The same three tenants, an instruction prompt",
+            "Give three short tips for staying focused while studying.",
+            "The Alpaca adapter was tuned on general instructions, so this is the request it is for. It goes to " +
+            "all three tenants, unchanged."),
     ];
 
     /// <summary>

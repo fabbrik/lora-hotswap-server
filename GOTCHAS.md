@@ -169,8 +169,9 @@ normalising it away.
 
 ### [NOTE] Qwen3 LoRA adapters convert cleanly at the pinned llama.cpp revision
 
-All four acquired adapters (`self_cognition_Alice`, `self_cognition_Bob`,
-`Qwen3-0.6B-TLDR-Lora`, `qwen3_06B_lora_math`) convert with no error at converter
+All four acquired adapters (`Qwen3-0.6B-nlp-to-sql`, `Qwen3-0.6B-alpaca-lora`,
+`Qwen3-0.6B-TLDR-Lora`, `Qwen3-0.6B-clinical-lora`; an earlier set was replaced by
+Apache-2.0 ones, and converted the same way) convert with no error at converter
 revision `749f688f…` — the architecture (`Qwen3ForCausalLM`) is supported. This
 was the main unverified external dependency in the conversion step; it is now
 confirmed to work.
@@ -306,7 +307,7 @@ already exited non-zero. Nothing binds a listener in between.
 
 ### [HIT] Strict base matching is a *feature*, not a bug to normalize away
 
-The acquired `qwen3_06B_lora_math` declares `unsloth/Qwen3-0.6B` for weights
+Some published adapters (one was used earlier in development) declare `unsloth/Qwen3-0.6B` for weights
 compatible with `Qwen/Qwen3-0.6B`. Admission compares `base_model_name_or_path` to
 the configured base by **ordinal string equality** and rejects the mismatch. A
 normalization table (case-folding, vendor-prefix stripping) would paper over a
@@ -478,7 +479,7 @@ context.NativeHandle.SetLoraAdapters([(adapter, 1.0f)]);             // context-
 ```
 
 `SetLoraAdapters` replaces the context's whole adapter set — passing an empty span
-clears it back to base — and the same context answers as Alice, then as Bob, then as
+clears it back to base — and the same context answers as adapter A, then as adapter B, then as
 the base model, in that order, without reloading anything. `PerRequestApply` is
 therefore honest: it really does apply the adapter on every lease.
 

@@ -36,7 +36,7 @@ public static class CaptureReport
     public const double CloseAnswerThreshold = 0.7;
 
     /// <summary>
-    /// The shortest answer word overlap is allowed to judge. "I am Alice." and "I am Bob."
+    /// The shortest answer word overlap is allowed to judge. "I am Alice." and "I am Bob." (two adapters differing in one word)
     /// share four fifths of their words and say two different things -- the one word that
     /// differs is the whole point -- so on a short answer the measure says nothing worth
     /// publishing. Identical short answers are still reported: that check is exact.
