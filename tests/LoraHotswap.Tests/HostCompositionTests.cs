@@ -122,6 +122,48 @@ public sealed class HostCompositionTests
         Assert.DoesNotContain(TenantServingTests.FaultyRuntime.SecretMessage, stderr.ToString());
     }
 
+    [Fact]
+    public async Task The_composed_host_enforces_the_configured_api_keys()
+    {
+        using TempDirectory adapter = TestFixtures.Copy(TestFixtures.ScalingFour);
+        AdapterId id = TestFixtures.AdapterAt(adapter.Path).Id;
+        Dictionary<string, string?> settings = Settings(adapter.Path, tenant: ("alice", id));
+        settings["Auth:TenantKeySha256:alice"] = EndpointSecurity.Digest("alice-key");
+        settings["Auth:AdminKeySha256"] = EndpointSecurity.Digest("admin-key");
+
+        HostStartup startup = await BuildAsync(settings);
+        await using WebApplication app = Assert.IsType<WebApplication>(startup.App);
+        await app.StartAsync(Ct);
+        using HttpClient client = app.GetTestClient();
+
+        using HttpResponseMessage anonymous = await client.PostAsJsonAsync("/v1/generate", new { tenant = "alice", prompt = "hi" }, Ct);
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+
+        using var authed = new HttpRequestMessage(HttpMethod.Post, "/v1/generate") { Content = JsonContent.Create(new { tenant = "alice", prompt = "hi" }) };
+        authed.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "alice-key");
+        using HttpResponseMessage ok = await client.SendAsync(authed, Ct);
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+
+        using HttpResponseMessage health = await client.GetAsync("/healthz", Ct);
+        Assert.Equal(HttpStatusCode.OK, health.StatusCode);
+    }
+
+    [Fact]
+    public async Task Api_keys_that_leave_a_tenant_unkeyed_fail_startup_before_any_listener()
+    {
+        using TempDirectory adapter = TestFixtures.Copy(TestFixtures.ScalingFour);
+        AdapterId id = TestFixtures.AdapterAt(adapter.Path).Id;
+        Dictionary<string, string?> settings = Settings(adapter.Path, tenant: ("alice", id));
+        settings["Auth:AdminKeySha256"] = EndpointSecurity.Digest("admin-key"); // admin only: alice has no key
+        var stderr = new StringWriter();
+
+        HostStartup startup = await BuildAsync(settings, stderr: stderr);
+
+        Assert.Null(startup.App);
+        Assert.Equal(1, startup.ExitCode);
+        Assert.Contains("no API key for tenant(s) alice", stderr.ToString(), StringComparison.Ordinal);
+    }
+
     private static Dictionary<string, string?> Settings(string adapterDirectory, (string Name, AdapterId Id)? tenant = null)
     {
         var settings = new Dictionary<string, string?>

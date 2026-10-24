@@ -39,6 +39,12 @@ public static class ProblemTypes
     /// <summary>The request is malformed (missing tenant, prompt, or a malformed identity).</summary>
     public const string InvalidRequest = Prefix + "invalid-request";
 
+    /// <summary>
+    /// The request carries no valid API key for what it asks for. The same problem is returned
+    /// whether the tenant exists or not, so a caller cannot use it to enumerate tenants.
+    /// </summary>
+    public const string Unauthorized = Prefix + "unauthorized";
+
     /// <summary>The request names a tenant that is not configured (AD-7).</summary>
     public const string UnknownTenant = Prefix + "unknown-tenant";
 

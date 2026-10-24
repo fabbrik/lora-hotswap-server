@@ -81,6 +81,7 @@ public static class ServingEndpoints
     public static IReadOnlyDictionary<string, int> StatusCodesByType { get; } = new Dictionary<string, int>(StringComparer.Ordinal)
     {
         [ProblemTypes.InvalidRequest] = StatusCodes.Status400BadRequest,
+        [ProblemTypes.Unauthorized] = StatusCodes.Status401Unauthorized,
         [ProblemTypes.UnknownTenant] = StatusCodes.Status404NotFound,
         [ProblemTypes.UnknownAdapter] = StatusCodes.Status404NotFound,
         [ProblemTypes.HashMismatch] = StatusCodes.Status409Conflict,
@@ -101,14 +102,26 @@ public static class ServingEndpoints
         this IEndpointRouteBuilder routes,
         TenantServingService serving,
         AdapterRegistry registry,
-        IAdapterVerifier verifier)
+        IAdapterVerifier verifier,
+        EndpointSecurity? security = null,
+        ServingMetrics? metrics = null)
     {
+        security ??= EndpointSecurity.Open;
         ArgumentNullException.ThrowIfNull(routes);
         ArgumentNullException.ThrowIfNull(serving);
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(verifier);
 
         ILogger logger = routes.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("LoraHotswap.Serving");
+
+        // Liveness: the process is up and admission succeeded (no route exists before it does).
+        // Open on purpose -- orchestrators probe it -- and it reveals only a count.
+        routes.MapGet("/healthz", () => Results.Json(new { status = "ok", tenants = registry.Tenants.Count }));
+
+        routes.MapGet("/metrics", (HttpContext http) =>
+            security.AuthorizeAdmin(http.Request)
+                ? Results.Text((metrics ?? new ServingMetrics([])).Render(), "text/plain; version=0.0.4; charset=utf-8")
+                : Problem(http, RequestProblem.Unauthorized()));
 
         routes.MapPost("/v1/generate", async (HttpContext http, CancellationToken token) =>
         {
@@ -139,11 +152,20 @@ public static class ServingEndpoints
                 return Problem(http, RequestProblem.InvalidRequest("The request must carry a prompt."));
             }
 
+            // Authenticate before looking the tenant up: the answer for "no such tenant" and
+            // "wrong key" must be the same, or this endpoint lists the tenants.
+            if (!security.AuthorizeTenant(http.Request, request.Tenant))
+            {
+                metrics?.RecordFailed(null, ProblemTypes.Unauthorized);
+                return Problem(http, RequestProblem.Unauthorized());
+            }
+
             var tenant = new TenantId(request.Tenant);
             string adapterForLogs = registry.ResolveTenant(tenant)?.Id.Value ?? LoraHotswapTelemetry.UnidentifiedAdapter;
             try
             {
                 TenantResponse response = await serving.ServeAsync(new TenantRequest(tenant, request.Prompt), token);
+                metrics?.RecordServed(tenant.Value, response.Timings.GenerationMicroseconds);
                 return Results.Ok(new GenerateResponse(
                     response.Tenant.Value,
                     response.Adapter.Value,
@@ -160,6 +182,7 @@ public static class ServingEndpoints
             {
                 // Structured, naming the tenant and its adapter, and carrying the trace id the
                 // caller was handed, so a log line and a trace are two views of one request.
+                metrics?.RecordFailed(tenant.Value, ex.Problem.Type);
                 logger.LogWarning(ex.InnerException,
                     "Request for tenant {TenantId} with adapter {AdapterId} failed closed: {ProblemType} (trace {TraceId})",
                     tenant.Value, adapterForLogs, ex.Problem.Type, TraceId(http));
@@ -167,6 +190,7 @@ public static class ServingEndpoints
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
             {
+                metrics?.RecordFailed(tenant.Value, ProblemTypes.InternalError);
                 logger.LogError(ex,
                     "Request for tenant {TenantId} with adapter {AdapterId} failed unexpectedly (trace {TraceId})",
                     tenant.Value, adapterForLogs, TraceId(http));
@@ -178,6 +202,11 @@ public static class ServingEndpoints
         {
             // Every verification request gets a span (Story 1.9), a malformed one included;
             // a malformed ID is not an identity, so the span says so rather than echoing it.
+            if (!security.AuthorizeAdmin(http.Request))
+            {
+                return Problem(http, RequestProblem.Unauthorized());
+            }
+
             using Activity? activity = LoraHotswapTelemetry.Source.StartActivity(VerificationSpanName, ActivityKind.Internal);
             if (!IsContentIdentity(adapterId))
             {

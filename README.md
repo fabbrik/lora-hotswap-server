@@ -67,11 +67,80 @@ match the commit history.
 | Avoid the traps | [`GOTCHAS.md`](GOTCHAS.md) |
 | Work on it (humans or agents) | [`CONTRIBUTING.md`](CONTRIBUTING.md), [`AGENTS.md`](AGENTS.md) |
 | Check what is redistributed | [`THIRD_PARTY.md`](THIRD_PARTY.md) |
+| Run it for real | [API](#api), [API keys](#api-keys), [Running in a container](#running-in-a-container) |
 
 Companion project: [lora-anatomy-dotnet](https://github.com/fabbrik/lora-anatomy-dotnet), the
 safetensors reader and merge math this server's verification is modelled on.
 
 Licensed under the [MIT License](LICENSE). Models and adapters keep their authors' licenses.
+
+## What it is for
+
+- **Multi-tenant AI products.** One tenant per customer or team, each with its own LoRA adapter.
+  A request names a tenant (`{"tenant":"sql","prompt":"..."}`) and that tenant's adapter answers,
+  from one resident copy of the base model instead of one model per customer.
+- **Proof of isolation.** Every response names the adapter the runtime actually applied, and
+  a mismatch fails the request rather than returning a plausible wrong answer. That is the
+  evidence for "tenant A never got tenant B's model".
+- **Admitting adapters you did not train.** Adapters are rejected unless their content hash,
+  declared base model, merge result and non-zero weights check out. Some popular published
+  adapters are silent no-ops; this refuses them at startup.
+- **Measuring the cost of swapping.** `tools/compare` times adapter switching under different
+  binding strategies, to decide how to run it.
+- **A reference** for adding LoRA serving to an ASP.NET service.
+
+It is a CPU-only llama.cpp host for small models, not a replacement for GPU servers such as vLLM
+when you need throughput.
+
+## API
+
+| Route | Auth | What |
+|---|---|---|
+| `POST /v1/generate` `{"tenant","prompt"}` | tenant key | Generate with the tenant's adapter. Returns the text, the adapter applied, and per-stage timings. |
+| `POST /v1/adapters/{sha256:...}/verify` | admin key | Re-check an admitted adapter's merge against its reference. |
+| `GET /healthz` | open | Liveness; the admitted tenant count. |
+| `GET /metrics` | admin key | Prometheus text: `lorahotswap_requests_total{tenant,outcome}` and a `lorahotswap_generation_seconds` histogram. |
+
+Failures are RFC 9457 problems with a stable `type` under `https://lora-hotswap/problems/`
+(`unknown-tenant`, `unauthorized`, `lease-unavailable`, `prompt-too-long`, ...). Each carries a
+`traceId` that finds the request's OpenTelemetry trace.
+
+### API keys
+
+With no `Auth` section the server is open, which is fine on localhost and wrong anywhere shared.
+To turn auth on, give **every** tenant a key plus an admin key, stored only as SHA-256 digests:
+
+```bash
+printf %s "alice-secret" | shasum -a 256     # -> Auth:TenantKeySha256:alice
+printf %s "admin-secret" | shasum -a 256     # -> Auth:AdminKeySha256
+```
+
+```jsonc
+"Auth": { "TenantKeySha256": { "alice": "<64 hex>" }, "AdminKeySha256": "<64 hex>" }
+```
+
+Clients send `Authorization: Bearer alice-secret`. Startup fails if any tenant lacks a key, a
+digest is malformed, or the admin key is missing. A tenant key serves only that tenant; the admin
+key serves no tenant. A wrong key, a missing key and an unknown tenant all get the same 401, so
+the endpoint cannot be used to list tenants. Terminate TLS in front of the server; keys travel in
+a header.
+
+## Running in a container
+
+```bash
+docker build -t lora-hotswap-server .
+docker run --platform linux/amd64 -p 8080:8080 \
+  -v "$PWD/models:/data/models:ro" -v "$PWD/adapters:/data/adapters:ro" \
+  -e Admission__Adapters__0=Qwen3-0.6B-nlp-to-sql \
+  -e Admission__Tenants__sql=sha256:<adapter_model.safetensors sha256> \
+  lora-hotswap-server
+```
+
+Models and adapters are mounted, never baked in. **Use `linux/amd64`:** TorchSharp ships no
+linux-arm64 native library, so an arm64 container fails admission. Verified here: the image builds,
+starts, admits the adapter, loads the model and enforces the API keys. Not verified: generation
+speed on real x86 hardware; this was run under emulation on Apple Silicon, where generation is
+too slow to finish a request. Probe `GET /healthz` from your orchestrator.
 
 ## How this works
 

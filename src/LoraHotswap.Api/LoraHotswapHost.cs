@@ -129,6 +129,7 @@ public static class LoraHotswapHost
         // socket is bound when startup fails.
         AdmissionOptions admissionOptions = new();
         ServingOptions servingOptions = new();
+        AuthOptions authOptions = new();
         AdmissionStartupOutcome outcome;
         try
         {
@@ -136,6 +137,8 @@ public static class LoraHotswapHost
             admissionOptions.Validate();
             builder.Configuration.GetSection(ServingOptions.SectionName).Bind(servingOptions);
             servingOptions.Validate();
+            builder.Configuration.GetSection(AuthOptions.SectionName).Bind(authOptions);
+            authOptions.Validate(admissionOptions.TenantMap().Keys.Select(t => t.Value));
 
             outcome = await AdmissionStartup.RunAsync(
                 admissionOptions.ResolveAdapterDirectories(builder.Environment.ContentRootPath),
@@ -246,7 +249,8 @@ public static class LoraHotswapHost
 
         var serving = new TenantServingService(registry, runtime, strategy, admissionOptions.BaseModelName);
         var verifier = new SafeTensorsAdapterVerifier(outcome.AdapterDirectories);
-        app.MapServingEndpoints(serving, registry, verifier);
+        var metrics = new ServingMetrics(registry.Tenants.Keys.Select(t => t.Value));
+        app.MapServingEndpoints(serving, registry, verifier, new EndpointSecurity(authOptions), metrics);
         return null;
     }
 }

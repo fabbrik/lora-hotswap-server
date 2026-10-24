@@ -1,0 +1,10 @@
+bin/
+obj/
+.git/
+models/
+adapters/
+tools/
+tests/
+docs/
+**/.venv/
+.DS_Store

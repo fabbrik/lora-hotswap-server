@@ -84,6 +84,15 @@ public sealed record RequestProblem(string Type, string Title, string Detail)
         $"Adapter '{adapter}' was admitted by content hash, but its source file on disk now hashes to " +
         $"'{onDisk}'. Restart to re-admit it.");
 
+    /// <summary>
+    /// A missing or wrong API key. Deliberately identical for every cause (no key, wrong key,
+    /// unknown tenant) so the response reveals nothing about which tenants exist.
+    /// </summary>
+    public static RequestProblem Unauthorized() => new(
+        ProblemTypes.Unauthorized,
+        "Unauthorized",
+        "A valid API key is required: send 'Authorization: Bearer <key>'.");
+
     /// <summary>An unexpected fault. Deliberately generic: internals stay in the logs.</summary>
     public static RequestProblem InternalError() => new(
         ProblemTypes.InternalError,
