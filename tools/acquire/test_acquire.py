@@ -428,3 +428,15 @@ def test_main_reports_write_failure_cleanly(tmp_path, hub, monkeypatch, capsys):
 
     assert A.main(["--root", str(tmp_path)]) == A.EXIT_FAILED
     assert "disk full" in capsys.readouterr().err
+
+
+def test_prune_lock_drops_artifacts_no_longer_declared():
+    lock = {"artifacts": {"alice": {"revision": "x"}, "bob": {"revision": "y"}, "gone": {"revision": "z"}}}
+    removed = A.prune_lock(lock, [ALICE, BOB])
+    assert removed == ["gone"]
+    assert set(lock["artifacts"]) == {"alice", "bob"}
+
+
+def test_committed_lock_names_only_declared_artifacts():
+    declared = {a.name for a in A.load_sources()}
+    assert set(A.load_lock()["artifacts"]) == declared

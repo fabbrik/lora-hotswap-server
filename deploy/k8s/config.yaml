@@ -1,0 +1,32 @@
+# Non-secret configuration. Tenant ids map to the sha256 of each adapter's
+# adapter_model.safetensors, exactly as pinned in tools/acquire/acquired.lock.json.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lora-hotswap-config
+  namespace: lora-hotswap
+data:
+  ASPNETCORE_URLS: "http://+:8080"
+  Inference__Runtime: "LLamaSharp"
+  Inference__ModelPath: "/data/models/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+  Inference__MaxTokens: "128"
+  Inference__PromptTemplate: |-
+    <|im_start|>user
+    {prompt}<|im_end|>
+    <|im_start|>assistant
+    <think>
+
+    </think>
+
+  Admission__AdaptersRoot: "/data/adapters"
+  Admission__Adapters__0: "Qwen3-0.6B-nlp-to-sql"
+  Admission__Adapters__1: "Qwen3-0.6B-alpaca-lora"
+  Admission__Adapters__2: "Qwen3-0.6B-TLDR-Lora"
+  Admission__Adapters__3: "Qwen3-0.6B-clinical-lora"
+  Admission__Tenants__sql: "sha256:dfae3a000305884335889092326278f91fd30c7067405248e03e763ec7d3b2d8"
+  Admission__Tenants__alpaca: "sha256:e581856a5b5fce1574f94982ea336cbca2df1fd2b70abee4e061e529b9a49a4f"
+  Admission__Tenants__tldr: "sha256:05246882d23ac9824d92c773ebe7776a2e466c9f28d2cddf9c201f440004123a"
+  Admission__Tenants__clinical: "sha256:7c5ddef2993177d24ab59b07087191f302175ac915be8f481d82c4ec3e03b576"
+  Serving__BindingStrategy: "PerRequestApply"
+  Serving__ContextPoolSize: "2"
+  OpenTelemetry__ConsoleExporter: "false"

@@ -1,0 +1,11 @@
+# Holds models/ and adapters/ (about 1 GB for the demo set). Filled once by load-assets.sh.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lora-hotswap-data
+  namespace: lora-hotswap
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 3Gi

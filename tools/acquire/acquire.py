@@ -149,6 +149,19 @@ def load_lock(path: Path = LOCK_PATH) -> dict:
     return lock
 
 
+def prune_lock(lock: dict, artifacts: list["Artifact"]) -> list[str]:
+    """Drop lock entries for artifacts no longer declared in sources.toml.
+
+    A stale entry would keep advertising a repo the project no longer uses (and, for
+    a removed adapter, its license status). Returns the names removed.
+    """
+    declared = {a.name for a in artifacts}
+    stale = sorted(set(lock["artifacts"]) - declared)
+    for name in stale:
+        del lock["artifacts"][name]
+    return stale
+
+
 def render_lock(lock: dict) -> str:
     return json.dumps(lock, indent=2, sort_keys=True) + "\n"
 
@@ -332,6 +345,9 @@ def main(argv: list[str] | None = None) -> int:
     except (AcquisitionError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_FAILED
+
+    for name in prune_lock(lock, artifacts):
+        print(f"  {name:<25} dropped from the lock (no longer in sources.toml)")
 
     results = acquire(artifacts, args.root, lock, HuggingFaceHub())
 

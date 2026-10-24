@@ -1,0 +1,91 @@
+# No image registry needed: an init container clones the public repo and publishes it into a
+# shared emptyDir, and the runtime container runs that. Pin GIT_REF to a commit for
+# reproducible deploys. Models/adapters come from the PVC, never from the image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lora-hotswap
+  namespace: lora-hotswap
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate        # the PVC is ReadWriteOnce
+  selector:
+    matchLabels:
+      app: lora-hotswap
+  template:
+    metadata:
+      labels:
+        app: lora-hotswap
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      initContainers:
+        - name: build
+          image: mcr.microsoft.com/dotnet/sdk:10.0
+          env:
+            - name: GIT_REF
+              value: main
+            - name: HOME
+              value: /tmp
+            - name: DOTNET_CLI_TELEMETRY_OPTOUT
+              value: "1"
+          command: ["/bin/bash", "-ec"]
+          args:
+            - |
+              git clone https://github.com/fabbrik/lora-hotswap-server.git /tmp/src
+              cd /tmp/src && git checkout "$GIT_REF"
+              dotnet publish src/LoraHotswap.Api/LoraHotswap.Api.csproj \
+                -c Release -r linux-x64 --self-contained false -o /app
+          volumeMounts:
+            - { name: app, mountPath: /app }
+            - { name: tmp, mountPath: /tmp }
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "4", memory: 3Gi }
+      containers:
+        - name: server
+          image: mcr.microsoft.com/dotnet/aspnet:10.0
+          workingDir: /app
+          command: ["dotnet", "LoraHotswap.Api.dll"]
+          envFrom:
+            - configMapRef: { name: lora-hotswap-config }
+          env:
+            - name: Auth__AdminKeySha256
+              valueFrom: { secretKeyRef: { name: lora-hotswap-keys, key: admin } }
+            - name: Auth__TenantKeySha256__sql
+              valueFrom: { secretKeyRef: { name: lora-hotswap-keys, key: sql } }
+            - name: Auth__TenantKeySha256__alpaca
+              valueFrom: { secretKeyRef: { name: lora-hotswap-keys, key: alpaca } }
+            - name: Auth__TenantKeySha256__tldr
+              valueFrom: { secretKeyRef: { name: lora-hotswap-keys, key: tldr } }
+            - name: Auth__TenantKeySha256__clinical
+              valueFrom: { secretKeyRef: { name: lora-hotswap-keys, key: clinical } }
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits: { cpu: "4", memory: 4Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: app, mountPath: /app, readOnly: true }
+            - { name: data, mountPath: /data, readOnly: true }
+      volumes:
+        - name: app
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim: { claimName: lora-hotswap-data }
