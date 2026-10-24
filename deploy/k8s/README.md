@@ -1,6 +1,9 @@
 # Deploying to Kubernetes
 
-Tested on a single-node k3s cluster (amd64). Everything lives in the `lora-hotswap` namespace and
+Deployed and exercised on a single-node k3s cluster (amd64, CPU only): all four tenants served
+through their own adapters, API keys enforced (a tenant key on another tenant is a 401), `/metrics`
+counting per tenant. Cold start, including the in-pod build, took about a minute. Generation of
+~40 tokens took 2-6 s on CPU; applying an adapter per request cost 4-184 ms. Everything lives in the `lora-hotswap` namespace and
 touches nothing else.
 
 ```bash

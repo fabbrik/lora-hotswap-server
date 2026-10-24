@@ -137,10 +137,10 @@ docker run --platform linux/amd64 -p 8080:8080 \
 ```
 
 Models and adapters are mounted, never baked in. **Use `linux/amd64`:** TorchSharp ships no
-linux-arm64 native library, so an arm64 container fails admission. Verified here: the image builds,
-starts, admits the adapter, loads the model and enforces the API keys. Not verified: generation
-speed on real x86 hardware; this was run under emulation on Apple Silicon, where generation is
-too slow to finish a request. Probe `GET /healthz` from your orchestrator.
+linux-arm64 native library, so an arm64 container fails admission. The Dockerfile image was built
+and started under emulation on Apple Silicon (admission, model load and API keys worked; generation
+was too slow to finish there). The same code, run natively on amd64, is verified end to end in
+Kubernetes: see [`deploy/k8s/`](deploy/k8s/README.md). Probe `GET /healthz` from your orchestrator.
 
 ## How this works
 
